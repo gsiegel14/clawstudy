@@ -1,0 +1,14 @@
+# macOS
+.DS_Store
+
+# local runtime artifacts
+node_modules/
+.env
+.env.*
+
+# accidental clone artifacts not part of this planning repo
+moltworker/
+moltworker-incomplete/
+
+# logs
+*.log
