@@ -50,6 +50,17 @@ Optional but recommended:
 4. `TELEGRAM_BOT_TOKEN`
 5. `SANDBOX_SLEEP_AFTER` (example: `10m`)
 
+## 4.1) Telegram channel quick path
+
+1. Run checklist: `/Applications/clawstudy/docs/implementation/telegram-launch-checklist.md`.
+2. Run setup script:
+```bash
+export TELEGRAM_BOT_TOKEN='<botfather-token>'
+export TELEGRAM_DM_POLICY='pairing'
+bash /Applications/clawstudy/scripts/setup-telegram-moltworker.sh
+```
+3. Deploy and validate DM pairing in `/_admin/`.
+
 ## 5) First deployment checklist
 
 1. Install deps and deploy gateway:
