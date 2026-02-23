@@ -39,8 +39,13 @@ Required:
 2. `CF_ACCESS_TEAM_DOMAIN`
 3. `CF_ACCESS_AUD`
 4. One model provider key path:
-- `ANTHROPIC_API_KEY`, or
-- AI Gateway credentials
+- Recommended low-cost path:
+  - `CF_AI_GATEWAY_ACCOUNT_ID`
+  - `CF_AI_GATEWAY_GATEWAY_ID`
+  - `CLOUDFLARE_AI_GATEWAY_API_KEY`
+  - `CF_AI_GATEWAY_MODEL`
+- Alternative path:
+  - `ANTHROPIC_API_KEY`
 
 Optional but recommended:
 
@@ -50,7 +55,21 @@ Optional but recommended:
 4. `TELEGRAM_BOT_TOKEN`
 5. `SANDBOX_SLEEP_AFTER` (example: `10m`)
 
-## 4.1) Telegram channel quick path
+## 4.1) Low-cost model quick path (recommended)
+
+1. Run low-cost setup script:
+```bash
+bash /Applications/clawstudy/scripts/setup-low-cost-moltworker.sh
+```
+2. Default model in script is image-capable for PDF figures:
+- `workers-ai/@cf/meta/llama-3.2-11b-vision-instruct`
+3. If you want a lower-cost text-only default, set model override before running:
+```bash
+export CF_AI_GATEWAY_MODEL='workers-ai/@cf/meta/llama-3.2-3b-instruct'
+bash /Applications/clawstudy/scripts/setup-low-cost-moltworker.sh
+```
+
+## 4.2) Telegram channel quick path
 
 1. Run checklist: `/Applications/clawstudy/docs/implementation/telegram-launch-checklist.md`.
 2. Run setup script:
@@ -61,6 +80,26 @@ bash /Applications/clawstudy/scripts/setup-telegram-moltworker.sh
 ```
 3. Deploy and validate DM pairing in `/_admin/`.
 
+## 4.3) Study workspace and skills bootstrap
+
+1. Ensure image includes seeded workspace files:
+- `/root/clawd/SOUL.md`
+- `/root/clawd/AGENTS.md`
+2. Ensure custom study skills exist under `/root/clawd/skills/`:
+- `study-memory`
+- `study-pdf`
+3. Startup now auto-initializes `/root/clawd/memory` if `progress.json` is missing.
+4. Optional runtime settings:
+- `STUDY_OWNER` (default `study-bot`)
+- `STUDY_EXAM_DATE` (`YYYY-MM-DD`)
+Optional set commands:
+```bash
+cd /Applications/clawstudy/moltworker
+printf '%s' 'gabe' | npx wrangler secret put STUDY_OWNER
+printf '%s' '2026-03-31' | npx wrangler secret put STUDY_EXAM_DATE
+```
+5. Never store ACEP credentials in these files or workspace artifacts.
+
 ## 5) First deployment checklist
 
 1. Install deps and deploy gateway:
@@ -69,17 +108,14 @@ cd /Applications/clawstudy/moltworker
 npm install
 npm run deploy
 ```
-2. Set required secrets:
+2. Set required secrets (recommended):
 ```bash
-cd /Applications/clawstudy/moltworker
-openssl rand -hex 32 | npx wrangler secret put MOLTBOT_GATEWAY_TOKEN
-npx wrangler secret put CF_ACCESS_TEAM_DOMAIN
-npx wrangler secret put CF_ACCESS_AUD
-npx wrangler secret put ANTHROPIC_API_KEY
+bash /Applications/clawstudy/scripts/setup-low-cost-moltworker.sh
 ```
 3. Enable admin access policy in Cloudflare Access.
 4. Verify admin UI auth and device pairing flow.
 5. Configure R2 secrets and confirm backup timestamp in admin UI.
+6. Verify local `wrangler.jsonc` `r2_buckets[].bucket_name` matches deployed Worker binding before any redeploy.
 
 ## 6) Study-service integration plan
 
@@ -92,6 +128,16 @@ npx wrangler secret put ANTHROPIC_API_KEY
 3. Use signed calls between gateway and study service.
 4. Persist attempts/mastery in D1.
 5. Schedule daily dispatch using cron in study service.
+
+## 6.1) Current source corpus status (February 23, 2026)
+
+1. Uploaded corpus: 18 Emergency and Clinical Ultrasound PDFs.
+2. Bucket: `clawstudydata`.
+3. Prefix: `sources/emergency-clinical-ultrasound/`.
+4. Upload evidence manifest:
+- `/Applications/clawstudy/memory/uploaded-sources-emergency-ultrasound-2026-02-23.csv`
+5. Next operational task:
+- trigger ingest jobs and update each chapter from `source_ingest_status=uploaded` to `source_ingest_status=completed` after parse/chunk persistence.
 
 ## 7) ACEP PEER boundary
 

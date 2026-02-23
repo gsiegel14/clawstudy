@@ -15,7 +15,7 @@ Need durable, auditable data contracts to track study performance and support pr
 3. `question` (generated or curated prompt/options/explanation).
 4. `question_attempt` (answer, correctness, confidence, response latency).
 5. `topic_mastery` (rolling score, stability, next review date).
-6. `study_session` (planned vs actual).
+6. `quiz_session` (active chapter session state).
 7. `peer_session_summary` (topic-level summary from local bridge).
 8. `audit_event` (security and operational events).
 
@@ -28,15 +28,26 @@ Need durable, auditable data contracts to track study performance and support pr
 
 ## 4) API contracts
 
-Endpoints:
+MVP canonical endpoint set (effective February 23, 2026, aligned with `PRD-12`):
+
+1. `POST /v1/sources/upload-url`
+2. `POST /v1/sources/{source_id}/complete`
+3. `GET /v1/sources/{source_id}/status`
+4. `POST /v1/quiz/session/start`
+5. `POST /v1/quiz/session/{session_id}/answer`
+6. `GET /v1/progress/{user_id}`
+7. `GET /v1/analytics/dashboard`
+8. `POST /v1/peer/summary` (signed local payload)
+9. `POST /v1/channel/sms/webhook`
+10. `POST /v1/channel/sms/status`
+
+Deprecated aliases (do not implement for new builds):
 
 1. `POST /v1/sources`
 2. `POST /v1/ingest/jobs`
 3. `POST /v1/questions/generate`
 4. `POST /v1/quiz/dispatch`
 5. `POST /v1/quiz/answer`
-6. `POST /v1/peer/summary` (signed local payload)
-7. `GET /v1/analytics/dashboard`
 
 Contract rules:
 

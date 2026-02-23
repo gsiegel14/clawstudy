@@ -4,13 +4,32 @@ Last updated: February 23, 2026
 
 Use this checklist to launch a Telegram-first study loop with your Cloudflare-native moltworker gateway.
 
-## 1) Create Telegram bot token
+## 1) Configure low-cost model path first
+
+Run:
+
+```bash
+bash /Applications/clawstudy/scripts/setup-low-cost-moltworker.sh
+```
+
+Default script model is image-capable for PDF figure understanding:
+
+1. `workers-ai/@cf/meta/llama-3.2-11b-vision-instruct`
+
+If you want lower-cost text-only routing by default, set:
+
+```bash
+export CF_AI_GATEWAY_MODEL='workers-ai/@cf/meta/llama-3.2-3b-instruct'
+bash /Applications/clawstudy/scripts/setup-low-cost-moltworker.sh
+```
+
+## 2) Create Telegram bot token
 
 1. Open Telegram and chat with `@BotFather`.
 2. Run `/newbot`.
 3. Save the token securely.
 
-## 2) Set Telegram secret in Cloudflare Worker
+## 3) Set Telegram secret in Cloudflare Worker
 
 Fast path (recommended):
 
@@ -27,7 +46,7 @@ printf '%s' "${TELEGRAM_DM_POLICY:-pairing}" | npx wrangler secret put TELEGRAM_
 printf '%s' "$TELEGRAM_BOT_TOKEN" | npx wrangler secret put TELEGRAM_BOT_TOKEN
 ```
 
-## 3) Deploy and verify
+## 4) Deploy and verify
 
 ```bash
 cd /Applications/clawstudy/moltworker
@@ -40,7 +59,7 @@ Then:
 2. Send your bot a DM from Telegram.
 3. Approve pairing in admin UI (`/_admin/`) if DM policy is `pairing`.
 
-## 4) Configure study loop behavior
+## 5) Configure study loop behavior
 
 Keep this command set simple for SMS-like back-and-forth:
 
@@ -50,14 +69,14 @@ Keep this command set simple for SMS-like back-and-forth:
 4. `PAUSE` and `RESUME` control interruptions.
 5. `STATS` returns daily and weekly summary.
 
-## 5) Reliability guardrails
+## 6) Reliability guardrails
 
 1. Keep `dmPolicy=pairing` unless you intentionally open access.
 2. Allowlist only your own Telegram user id first.
 3. Enable R2 persistence so pairing and history survive restarts.
 4. Keep ACEP credentials local-only; upload PEER summary data only.
 
-## 6) Daily cadence recommendation (exam prep)
+## 7) Daily cadence recommendation (exam prep)
 
 1. Morning warm-up: 10 questions.
 2. Midday reinforcement: 5 weak-topic questions.

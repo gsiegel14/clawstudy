@@ -1,0 +1,21 @@
+{
+  "section_id": "acep-course",
+  "section_name": "ACEP Course",
+  "created_at": "2026-02-23T23:05:00Z",
+  "last_updated": "2026-02-23T23:05:00Z",
+  "source_batch": "acep-course-2026-02-23",
+  "pair_count": 23,
+  "sources_pdf_total": 46,
+  "sources_uploaded": 46,
+  "sources_ingested": 0,
+  "min_questions_per_pair": 25,
+  "target_questions_per_pair": 30,
+  "min_questions_total": 575,
+  "target_questions_total": 690,
+  "upload_prefix": "sources/acep-course-2026/pairs/",
+  "pair_manifest": "/Applications/clawstudy/memory/acep-course-pairs-manifest-2026-02-23.csv",
+  "upload_manifest": "/Applications/clawstudy/memory/acep-course-upload-manifest-2026-02-23.tsv",
+  "upload_results": "/Applications/clawstudy/memory/acep-course-upload-results-2026-02-23.csv",
+  "question_progress_file": "/Applications/clawstudy/memory/acep-course-question-progress-2026-02-23.csv",
+  "status": "uploaded_waiting_ingest"
+}

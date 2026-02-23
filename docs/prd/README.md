@@ -18,6 +18,8 @@ Program objective: Deliver a secure, low-cost, future-proof study system that in
 - `PRD-08-Analytics-and-Study-Planning.md`
 - `PRD-09-Ops-Cost-DR.md`
 - `PRD-10-Launch-Runbook.md`
+- `PRD-11-Telegram-FAST-Loop-MVP.md`
+- `PRD-12-Study-Service-MVP-and-Scale.md`
 
 ## Planning gates
 
@@ -47,5 +49,6 @@ Program objective: Deliver a secure, low-cost, future-proof study system that in
 1. Read `PRD-00` and `PRD-01` first.
 2. Confirm architecture in `PRD-02` and contracts in `PRD-03`.
 3. Build feature tracks in order: `PRD-04` to `PRD-08`.
-4. Enforce reliability and budget controls from `PRD-09` before launch.
-5. Execute `PRD-10` runbook for final go-live.
+4. Execute FAST-loop implementation requirements from `PRD-11` and `PRD-12`.
+5. Enforce reliability and budget controls from `PRD-09` before launch.
+6. Execute `PRD-10` runbook for final go-live.

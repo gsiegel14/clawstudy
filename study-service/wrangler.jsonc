@@ -1,0 +1,31 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "clawstudy-study-service",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-02-23",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": {
+    "enabled": true
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "clawstudy-study",
+      "database_id": "8a29008c-7fa1-4621-95c3-daed642762e1"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "STUDY_ASSETS",
+      "bucket_name": "clawstudydata"
+    }
+  ],
+  "vars": {
+    "SCHEMA_VERSION": "1.0.0"
+  }
+  // Secrets to set with `wrangler secret put`:
+  // - STUDY_SERVICE_TOKEN (required for /v1/* except Telegram webhook)
+  // - TELEGRAM_BOT_TOKEN (required for Telegram webhook sendMessage/sendPhoto)
+  // - TELEGRAM_WEBHOOK_SECRET (optional webhook signature validation)
+  // - TWILIO_AUTH_TOKEN (optional, validates Twilio webhook signatures for SMS routes)
+}

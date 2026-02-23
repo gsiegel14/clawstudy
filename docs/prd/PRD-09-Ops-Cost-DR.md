@@ -34,10 +34,23 @@ Out of scope:
 
 ## 4) Cost requirements
 
-1. Define monthly budget ceiling and warning thresholds (50%, 75%, 90%).
-2. Hard rate-limits for expensive generation endpoints.
-3. Daily token and messaging usage reports.
-4. Automatic downgrade behavior when budget threshold is exceeded.
+1. Define monthly budget ceiling and warning thresholds:
+- monthly AI+gateway ceiling: `$40.00`
+- 50% warning: `$20.00`
+- 75% warning: `$30.00`
+- 90% warning: `$36.00`
+2. Define daily spend and token caps:
+- daily model spend cap: `$1.50`
+- daily text-token cap: `500,000`
+- daily vision-token/page-processing cap: `25,000 token-equivalent`
+3. Hard rate-limits for expensive generation endpoints:
+- max concurrent chapter-generation jobs: `2`
+- max new question generation requests: `120/hour`
+4. Daily token and messaging usage reports.
+5. Automatic downgrade behavior when thresholds are exceeded:
+- at 75% monthly usage: disable non-essential regeneration jobs; keep runtime quiz path cache-only
+- at 90% monthly usage: disable all vision generation except active ingest retries and serve only cached questions
+- at 100% monthly usage: block new generation, keep answer scoring/explanations from cached content only
 
 ## 5) Non-functional requirements
 

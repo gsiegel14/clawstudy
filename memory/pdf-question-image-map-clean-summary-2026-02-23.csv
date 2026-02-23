@@ -1,0 +1,19 @@
+chapter_id,file_name,detected_questions,questions_with_images,questions_without_images,percent_with_images
+us-01,1. FAST.pdf,16,16,0,100.0
+us-02,2. Focused Echo.pdf,20,20,0,100.0
+us-03,3. Physics and Knobology.pdf,14,14,0,100.0
+us-04,4. Resuscitative US.pdf,18,17,1,94.4
+us-05,5. Thoracic Ultrasound.pdf,14,14,0,100.0
+us-06,6. Aorta.pdf,22,18,4,81.8
+us-07,7. Hepatobiliary.pdf,26,26,0,100.0
+us-08,8. Renal.pdf,12,12,0,100.0
+us-09,9. Pregnancy.pdf,11,11,0,100.0
+us-10,10. Gynecologic.pdf,12,12,0,100.0
+us-11,11. Soft TIssue.pdf,10,10,0,100.0
+us-12,12. Ocular.pdf,12,12,0,100.0
+us-13,13. Procedural US.pdf,21,17,4,81.0
+us-14,14. Airway and ENT.pdf,11,6,5,54.5
+us-15,15. DVT and VTE.pdf,15,12,3,80.0
+us-16,16. Testicular.pdf,11,11,0,100.0
+us-17,17. Bowel and Appendix.pdf,10,5,5,50.0
+us-18,18. MSK.pdf,11,2,9,18.2

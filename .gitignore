@@ -3,6 +3,7 @@
 
 # local runtime artifacts
 node_modules/
+.wrangler/
 .env
 .env.*
 
