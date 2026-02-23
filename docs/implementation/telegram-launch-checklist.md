@@ -12,17 +12,19 @@ Use this checklist to launch a Telegram-first study loop with your Cloudflare-na
 
 ## 2) Set Telegram secret in Cloudflare Worker
 
-Run in your moltworker checkout:
+Fast path (recommended):
+
+```bash
+export TELEGRAM_DM_POLICY='pairing'
+bash /Applications/clawstudy/scripts/setup-telegram-moltworker.sh
+```
+
+Manual path:
 
 ```bash
 cd /Applications/clawstudy/moltworker
-printf '%s' "$TELEGRAM_BOT_TOKEN" | npx wrangler secret put TELEGRAM_BOT_TOKEN
-```
-
-Optional DM policy environment variable:
-
-```bash
 printf '%s' "${TELEGRAM_DM_POLICY:-pairing}" | npx wrangler secret put TELEGRAM_DM_POLICY
+printf '%s' "$TELEGRAM_BOT_TOKEN" | npx wrangler secret put TELEGRAM_BOT_TOKEN
 ```
 
 ## 3) Deploy and verify
