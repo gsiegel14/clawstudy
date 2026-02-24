@@ -126,6 +126,36 @@ describe('study agent model routing', () => {
     expect(firstCall?.[0]).toBe('@cf/meta/llama-3.3-70b-instruct-fp8-fast');
   });
 
+  it('uses default Workers AI model when gateway model is non-WorkersAI', async () => {
+    const fetchMock = vi.fn(async (..._args: unknown[]) => createPlannerResponse());
+    vi.stubGlobal('fetch', fetchMock);
+
+    const aiRunMock = vi.fn(async (..._args: unknown[]) => ({
+      response: '{"action":"chat","message":"I can help you continue where you left off."}',
+    }));
+
+    const decision = await planTelegramAgentRoute(
+      createInput({
+        CF_AI_GATEWAY_MODEL: 'anthropic/claude-haiku-4-5-20251001',
+        CLOUDFLARE_AI_GATEWAY_API_KEY: undefined,
+        CF_AI_GATEWAY_ACCOUNT_ID: undefined,
+        CF_AI_GATEWAY_GATEWAY_ID: undefined,
+        AI: {
+          run: aiRunMock,
+        } as unknown as Env['AI'],
+      }),
+    );
+
+    expect(decision).toEqual({
+      route: 'chat',
+      message: 'I can help you continue where you left off.',
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(0);
+    expect(aiRunMock).toHaveBeenCalledTimes(1);
+    const firstCall = aiRunMock.mock.calls[0];
+    expect(firstCall?.[0]).toBe('@cf/meta/llama-3.3-70b-instruct-fp8-fast');
+  });
+
   it('normalizes ingest actions from planner output', async () => {
     const fetchMock = vi.fn(async (..._args: unknown[]) =>
       createPlannerResponse('{"action":"ingest_status","chapter_id":"us-01"}'),
@@ -136,6 +166,7 @@ describe('study agent model routing', () => {
     expect(decision).toEqual({
       route: 'ingest_status',
       chapterId: 'us-01',
+      chapterName: null,
     });
   });
 
@@ -149,6 +180,7 @@ describe('study agent model routing', () => {
     expect(decision).toEqual({
       route: 'start',
       chapterId: 'us-02',
+      chapterName: null,
     });
   });
 

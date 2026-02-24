@@ -5,7 +5,7 @@ import { buildImageDescription } from '../src/telegram';
 import type { QuizQuestion } from '../src/types';
 import type { AgentPlanner } from '../src/study-agent';
 
-const mockStartPlanner: AgentPlanner = async () => ({ route: 'start', chapterId: 'us-01' });
+const mockStartPlanner: AgentPlanner = async () => ({ route: 'start', chapterId: 'us-01', chapterName: null });
 
 function questionSeed(): QuizQuestion[] {
   return [
@@ -21,6 +21,7 @@ function questionSeed(): QuizQuestion[] {
       topic: 'fast',
       difficulty: 'medium',
       imageRef: null,
+      imageDescription: null,
     },
     {
       questionId: 'q-fast-2',
@@ -34,6 +35,7 @@ function questionSeed(): QuizQuestion[] {
       topic: 'fast',
       difficulty: 'medium',
       imageRef: null,
+      imageDescription: null,
     },
   ];
 }

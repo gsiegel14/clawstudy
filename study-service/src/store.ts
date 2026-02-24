@@ -128,6 +128,7 @@ function pilotQuestionForIndex(input: {
     topic: 'fast',
     difficulty: 'medium',
     imageRef: input.questionIndex === 0 ? input.imageRef : null,
+    imageDescription: null,
   };
 }
 
@@ -198,6 +199,28 @@ export class D1StudyStore implements StudyStore {
     return {
       ingestJobId,
       status: 'queued',
+    };
+  }
+
+  async getSourceByChapterId(chapterId: string): Promise<{ sourceId: string; ingestStatus: string | null; questionCount: number } | null> {
+    const source = await this.db
+      .prepare(
+        `SELECT s.id as source_id,
+                (SELECT ij.status FROM ingest_job ij WHERE ij.source_id = s.id ORDER BY ij.created_at DESC LIMIT 1) as ingest_status,
+                (SELECT COUNT(*) FROM question q WHERE q.chapter_id = ?1) as question_count
+         FROM source s
+         WHERE s.chapter_id = ?1
+         ORDER BY s.created_at DESC
+         LIMIT 1`,
+      )
+      .bind(chapterId)
+      .first<{ source_id: string; ingest_status: string | null; question_count: number }>();
+
+    if (!source) return null;
+    return {
+      sourceId: source.source_id,
+      ingestStatus: source.ingest_status,
+      questionCount: Number(source.question_count ?? 0),
     };
   }
 
@@ -409,7 +432,7 @@ export class D1StudyStore implements StudyStore {
   async getQuestionByIndex(chapterId: string, questionIndex: number): Promise<QuizQuestion | null> {
     const row = await this.db
       .prepare(
-        `SELECT id, chapter_id, stem, choices_json, correct_choice, explanation, source_chunk_ids_json, source_id, topic, difficulty, image_ref
+        `SELECT id, chapter_id, stem, choices_json, correct_choice, explanation, source_chunk_ids_json, source_id, topic, difficulty, image_ref, image_description
          FROM question
          WHERE chapter_id = ?1
          ORDER BY created_at ASC, id ASC
@@ -428,6 +451,7 @@ export class D1StudyStore implements StudyStore {
         topic: string | null;
         difficulty: string | null;
         image_ref: string | null;
+        image_description: string | null;
       }>();
 
     if (!row) {
@@ -446,13 +470,14 @@ export class D1StudyStore implements StudyStore {
       topic: row.topic ?? 'unknown',
       difficulty: row.difficulty ?? 'medium',
       imageRef: row.image_ref,
+      imageDescription: row.image_description ?? null,
     };
   }
 
   async getQuestionById(questionId: string): Promise<QuizQuestion | null> {
     const row = await this.db
       .prepare(
-        `SELECT id, chapter_id, stem, choices_json, correct_choice, explanation, source_chunk_ids_json, source_id, topic, difficulty, image_ref
+        `SELECT id, chapter_id, stem, choices_json, correct_choice, explanation, source_chunk_ids_json, source_id, topic, difficulty, image_ref, image_description
          FROM question
          WHERE id = ?1
          LIMIT 1`,
@@ -470,6 +495,7 @@ export class D1StudyStore implements StudyStore {
         topic: string | null;
         difficulty: string | null;
         image_ref: string | null;
+        image_description: string | null;
       }>();
 
     if (!row) {
@@ -488,6 +514,7 @@ export class D1StudyStore implements StudyStore {
       topic: row.topic ?? 'unknown',
       difficulty: row.difficulty ?? 'medium',
       imageRef: row.image_ref,
+      imageDescription: row.image_description ?? null,
     };
   }
 
@@ -1433,6 +1460,15 @@ export class InMemoryStudyStore implements StudyStore {
 
   async getSourceStatus(sourceId: string): Promise<SourceRecord | null> {
     return this.state.sources.get(sourceId) ?? null;
+  }
+
+  async getSourceByChapterId(chapterId: string): Promise<{ sourceId: string; ingestStatus: string | null; questionCount: number } | null> {
+    for (const [sourceId, source] of this.state.sources.entries()) {
+      if (source.chapterId === chapterId) {
+        return { sourceId, ingestStatus: source.ingestStatus ?? null, questionCount: 0 };
+      }
+    }
+    return null;
   }
 
   async getOrCreateSession(input: {

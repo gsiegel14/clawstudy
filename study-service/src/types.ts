@@ -11,6 +11,7 @@ export interface Env {
   INGEST_TEXT_MODEL?: string;
   INGEST_GENERATED_QUESTION_COUNT?: string;
   CF_AI_GATEWAY_MODEL?: string;
+  STUDY_AGENT_WORKERS_AI_MODEL?: string;
   EXAM_DATE?: string;
   // Secrets
   STUDY_SERVICE_TOKEN?: string;
@@ -55,6 +56,7 @@ export interface QuizQuestion {
   topic?: string;
   difficulty?: string | null;
   imageRef: string | null;
+  imageDescription: string | null;
 }
 
 export interface QuizSession {
@@ -146,6 +148,7 @@ export interface StudyStore {
   createSource(input: UploadSourceInput): Promise<{ sourceId: string; objectKey: string; uploadUrl: string; expiresAt: string }>;
   completeSource(sourceId: string): Promise<{ ingestJobId: string; status: 'queued' }>;
   getSourceStatus(sourceId: string): Promise<SourceRecord | null>;
+  getSourceByChapterId(chapterId: string): Promise<{ sourceId: string; ingestStatus: string | null; questionCount: number } | null>;
   getOrCreateSession(input: {
     chapterId: string;
     userId: string;

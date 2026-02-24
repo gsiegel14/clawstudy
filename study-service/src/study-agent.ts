@@ -39,12 +39,12 @@ export type AgentRouteDecision =
   | { route: 'folder'; folderQuery: string }
   | { route: 'pdfs' }
   | { route: 'pdf'; pdfQuery: string }
-  | { route: 'ingest'; chapterId: string | null }
-  | { route: 'ingest_status'; chapterId: string | null }
-  | { route: 'start'; chapterId: string | null }
-  | { route: 'question'; chapterId: string | null; questionNumber: number }
-  | { route: 'q1'; chapterId: string | null }
-  | { route: 'resume'; chapterId: string | null }
+  | { route: 'ingest'; chapterId: string | null; chapterName: string | null }
+  | { route: 'ingest_status'; chapterId: string | null; chapterName: string | null }
+  | { route: 'start'; chapterId: string | null; chapterName: string | null }
+  | { route: 'question'; chapterId: string | null; chapterName: string | null; questionNumber: number }
+  | { route: 'q1'; chapterId: string | null; chapterName: string | null }
+  | { route: 'resume'; chapterId: string | null; chapterName: string | null }
   | { route: 'upload_pdf'; label: string | null };
 
 export interface AgentPlannerInput {
@@ -66,7 +66,8 @@ export interface AgentPlannerInput {
 
 export type AgentPlanner = (input: AgentPlannerInput) => Promise<AgentRouteDecision | null>;
 
-const DEFAULT_AGENT_MODEL = 'workers-ai/@cf/meta/llama-3.3-70b-instruct-fp8-fast';
+const DEFAULT_WORKERS_AI_MODEL = '@cf/meta/llama-3.3-70b-instruct-fp8-fast';
+const DEFAULT_AGENT_MODEL = `workers-ai/${DEFAULT_WORKERS_AI_MODEL}`;
 const DEFAULT_CHAT_LIMIT = 800;
 
 function isTruthy(input: string | undefined): boolean {
@@ -82,15 +83,80 @@ function normalizeChapterId(value: unknown): string | null {
     return null;
   }
   const trimmed = value.trim().toLowerCase();
-  const match = trimmed.match(/^us[\s-]?([0-9]{1,2})$/);
-  if (!match || !match[1]) {
-    return null;
+
+  // us-XX (Emergency & Clinical Ultrasound)
+  const usMatch = trimmed.match(/^us[\s-]?([0-9]{1,2})$/);
+  if (usMatch?.[1]) {
+    const n = Number.parseInt(usMatch[1], 10);
+    if (n >= 1 && n <= 99) return `us-${String(n).padStart(2, '0')}`;
   }
-  const chapterNumber = Number.parseInt(match[1], 10);
-  if (!Number.isInteger(chapterNumber) || chapterNumber < 1 || chapterNumber > 99) {
-    return null;
+
+  // gp-XX (Gottlieb POCUS)
+  const gpMatch = trimmed.match(/^gp[\s-]?([0-9]{1,2})$/);
+  if (gpMatch?.[1]) {
+    const n = Number.parseInt(gpMatch[1], 10);
+    if (n >= 1 && n <= 99) return `gp-${String(n).padStart(2, '0')}`;
   }
-  return `us-${String(chapterNumber).padStart(2, '0')}`;
+
+  // acep-XX (ACEP Course)
+  const acepMatch = trimmed.match(/^acep[\s-]?([0-9]{1,2})$/);
+  if (acepMatch?.[1]) {
+    const n = Number.parseInt(acepMatch[1], 10);
+    if (n >= 1 && n <= 99) return `acep-${String(n).padStart(2, '0')}`;
+  }
+
+  return null;
+}
+
+// US chapter keyword map for fuzzy name resolution
+const US_CHAPTER_KEYWORDS: Array<{ id: string; keywords: string[] }> = [
+  { id: 'us-01', keywords: ['fast exam', 'fast', 'focused assessment', 'trauma scan'] },
+  { id: 'us-02', keywords: ['focused echo', 'focused cardiac', 'echo', 'cardiac', 'echocardiography'] },
+  { id: 'us-03', keywords: ['physics', 'knobology', 'transducer', 'machine settings'] },
+  { id: 'us-04', keywords: ['resuscitative', 'resus', 'cardiac arrest', 'cpr ultrasound'] },
+  { id: 'us-05', keywords: ['thoracic', 'lung', 'pneumothorax', 'pleural effusion', 'pulmonary'] },
+  { id: 'us-06', keywords: ['aorta', 'aortic', 'aneurysm', 'aaa', 'abdominal aorta'] },
+  { id: 'us-07', keywords: ['hepatobiliary', 'liver', 'gallbladder', 'biliary', 'hepatic'] },
+  { id: 'us-08', keywords: ['renal', 'kidney', 'hydronephrosis', 'ureter', 'urinary'] },
+  { id: 'us-09', keywords: ['pregnancy', 'ob', 'obstetric', 'fetal', 'uterus', 'ectopic', 'intrauterine'] },
+  { id: 'us-10', keywords: ['gynecologic', 'gynecology', 'gyn', 'pelvic', 'ovary', 'ovarian'] },
+  { id: 'us-11', keywords: ['soft tissue', 'abscess', 'cellulitis', 'skin infection', 'foreign body'] },
+  { id: 'us-12', keywords: ['ocular', 'eye', 'optic nerve', 'retina', 'orbital'] },
+  { id: 'us-13', keywords: ['procedural', 'procedure', 'central line', 'nerve block', 'guided procedure'] },
+  { id: 'us-14', keywords: ['airway', 'ent', 'throat', 'neck', 'trachea', 'larynx'] },
+  { id: 'us-15', keywords: ['dvt', 'vte', 'deep vein', 'thrombosis', 'venous', 'clot'] },
+  { id: 'us-16', keywords: ['testicular', 'testicle', 'scrotal', 'scrotum', 'epididymis'] },
+  { id: 'us-17', keywords: ['bowel', 'appendix', 'appendicitis', 'intestine', 'gi', 'gastrointestinal'] },
+  { id: 'us-18', keywords: ['msk', 'musculoskeletal', 'muscle', 'tendon', 'bone', 'joint', 'fracture'] },
+];
+
+export function resolveChapterIdFromName(query: string): string | null {
+  if (!query || query.trim().length === 0) return null;
+  const q = query.toLowerCase().trim();
+
+  // Direct ID format first
+  const directId = normalizeChapterId(q);
+  if (directId) return directId;
+
+  // "chapter N" or bare number → us-NN
+  const numMatch = q.match(/(?:chapter\s+)?([0-9]{1,2})(?:\s|$|[^0-9])/);
+  if (numMatch?.[1]) {
+    const n = Number.parseInt(numMatch[1], 10);
+    if (n >= 1 && n <= 18) return `us-${String(n).padStart(2, '0')}`;
+  }
+
+  // Keyword match — longest match wins
+  let bestId: string | null = null;
+  let bestScore = 0;
+  for (const entry of US_CHAPTER_KEYWORDS) {
+    for (const keyword of entry.keywords) {
+      if (q.includes(keyword) && keyword.length > bestScore) {
+        bestScore = keyword.length;
+        bestId = entry.id;
+      }
+    }
+  }
+  return bestId;
 }
 
 function trimToLength(input: string, maxLength: number): string {
@@ -187,62 +253,45 @@ function normalizeDecision(raw: Record<string, unknown>): AgentRouteDecision | n
   }
   const action = actionRaw.toLowerCase();
 
+  // chapter_name is the LLM's free-text chapter reference (e.g. "focused echo")
+  // chapter_id is the preferred exact format (e.g. "us-02")
+  const rawChapterId = raw.chapter_id ?? raw.chapterId;
+  const chapterId = normalizeChapterId(rawChapterId);
+  const chapterName =
+    coerceString(raw.chapter_name ?? raw.chapterName) ??
+    (chapterId === null && rawChapterId !== undefined ? coerceString(rawChapterId) : null);
+
   if (action === 'skill' || action === 'run_skill' || action === 'execute_skill') {
     const skillRaw = coerceString(raw.skill_id) ?? coerceString(raw.skillId);
     if (!skillRaw) {
       return null;
     }
     const skill = skillRaw.toLowerCase() as AgentSkillId;
-    const chapterId = normalizeChapterId(raw.chapter_id ?? raw.chapterId);
     const folderQuery = coerceString(raw.folder_query) ?? coerceString(raw.folderQuery) ?? coerceString(raw.query);
     const pdfQuery = coerceString(raw.pdf_query) ?? coerceString(raw.pdfQuery) ?? coerceString(raw.query);
     const message = coerceString(raw.message) ?? coerceString(raw.reply);
     const limitValue = Number(raw.limit);
     const limit = Number.isFinite(limitValue) ? Math.max(1, Math.min(10, Math.floor(limitValue))) : 5;
 
-    if (skill === 'list_folders') {
-      return { route: 'folders' };
-    }
+    if (skill === 'list_folders') return { route: 'folders' };
     if (skill === 'select_folder') {
-      if (!folderQuery) {
-        return null;
-      }
+      if (!folderQuery) return null;
       return { route: 'folder', folderQuery };
     }
-    if (skill === 'list_pdfs') {
-      return { route: 'pdfs' };
-    }
+    if (skill === 'list_pdfs') return { route: 'pdfs' };
     if (skill === 'open_pdf') {
-      if (!pdfQuery) {
-        return null;
-      }
+      if (!pdfQuery) return null;
       return { route: 'pdf', pdfQuery };
     }
-    if (skill === 'review_chapter') {
-      return { route: 'start', chapterId };
-    }
-    if (skill === 'question_one') {
-      return { route: 'q1', chapterId };
-    }
-    if (skill === 'resume_chapter') {
-      return { route: 'resume', chapterId };
-    }
-    if (skill === 'queue_ingest') {
-      return { route: 'ingest', chapterId };
-    }
-    if (skill === 'ingest_status') {
-      return { route: 'ingest_status', chapterId };
-    }
-    if (skill === 'review_misses') {
-      return { route: 'misses', limit };
-    }
-    if (skill === 'review_last_miss') {
-      return { route: 'last_miss' };
-    }
+    if (skill === 'review_chapter') return { route: 'start', chapterId, chapterName };
+    if (skill === 'question_one') return { route: 'q1', chapterId, chapterName };
+    if (skill === 'resume_chapter') return { route: 'resume', chapterId, chapterName };
+    if (skill === 'queue_ingest') return { route: 'ingest', chapterId, chapterName };
+    if (skill === 'ingest_status') return { route: 'ingest_status', chapterId, chapterName };
+    if (skill === 'review_misses') return { route: 'misses', limit };
+    if (skill === 'review_last_miss') return { route: 'last_miss' };
     if (skill === 'direct_reply') {
-      if (!message) {
-        return null;
-      }
+      if (!message) return null;
       return { route: 'chat', message: trimToLength(message, DEFAULT_CHAT_LIMIT) };
     }
     return null;
@@ -250,9 +299,7 @@ function normalizeDecision(raw: Record<string, unknown>): AgentRouteDecision | n
 
   if (action === 'chat' || action === 'reply') {
     const message = coerceString(raw.message) ?? coerceString(raw.reply) ?? null;
-    if (!message) {
-      return null;
-    }
+    if (!message) return null;
     return { route: 'chat', message: trimToLength(message, DEFAULT_CHAT_LIMIT) };
   }
 
@@ -266,68 +313,50 @@ function normalizeDecision(raw: Record<string, unknown>): AgentRouteDecision | n
     return { route: 'last_miss' };
   }
 
-  if (action === 'folders') {
-    return { route: 'folders' };
-  }
+  if (action === 'folders') return { route: 'folders' };
 
   if (action === 'folder') {
     const folderQuery = coerceString(raw.folder_query) ?? coerceString(raw.folderQuery) ?? null;
-    if (!folderQuery) {
-      return null;
-    }
+    if (!folderQuery) return null;
     return { route: 'folder', folderQuery };
   }
 
-  if (action === 'pdfs') {
-    return { route: 'pdfs' };
-  }
+  if (action === 'pdfs') return { route: 'pdfs' };
 
   if (action === 'pdf' || action === 'start_pdf' || action === 'read_pdf') {
     const pdfQuery = coerceString(raw.pdf_query) ?? coerceString(raw.pdfQuery) ?? null;
-    if (!pdfQuery) {
-      return null;
-    }
+    if (!pdfQuery) return null;
     return { route: 'pdf', pdfQuery };
   }
 
-  if (action === 'ingest' || action === 'reingest' || action === 'parse_pdf') {
-    const chapterId = normalizeChapterId(raw.chapter_id ?? raw.chapterId);
-    return { route: 'ingest', chapterId };
+  if (action === 'ingest' || action === 'reingest' || action === 'parse_pdf' || action === 'process') {
+    return { route: 'ingest', chapterId, chapterName };
   }
 
   if (action === 'ingest_status' || action === 'status_ingest') {
-    const chapterId = normalizeChapterId(raw.chapter_id ?? raw.chapterId);
-    return { route: 'ingest_status', chapterId };
+    return { route: 'ingest_status', chapterId, chapterName };
   }
 
-  if (action === 'start') {
-    const chapterId = normalizeChapterId(raw.chapter_id ?? raw.chapterId);
-    return { route: 'start', chapterId };
+  if (action === 'start' || action === 'study' || action === 'review') {
+    return { route: 'start', chapterId, chapterName };
   }
 
   if (action === 'question') {
-    const chapterId = normalizeChapterId(raw.chapter_id ?? raw.chapterId);
     const questionNumber =
       coerceQuestionNumber(raw.question_number) ??
       coerceQuestionNumber(raw.questionNumber) ??
       coerceQuestionNumber(raw.index);
-    if (!questionNumber) {
-      return null;
-    }
-    if (questionNumber === 1) {
-      return { route: 'q1', chapterId };
-    }
-    return { route: 'question', chapterId, questionNumber };
+    if (!questionNumber) return null;
+    if (questionNumber === 1) return { route: 'q1', chapterId, chapterName };
+    return { route: 'question', chapterId, chapterName, questionNumber };
   }
 
   if (action === 'q1' || action === 'question_1') {
-    const chapterId = normalizeChapterId(raw.chapter_id ?? raw.chapterId);
-    return { route: 'q1', chapterId };
+    return { route: 'q1', chapterId, chapterName };
   }
 
   if (action === 'resume' || action === 'continue') {
-    const chapterId = normalizeChapterId(raw.chapter_id ?? raw.chapterId);
-    return { route: 'resume', chapterId };
+    return { route: 'resume', chapterId, chapterName };
   }
 
   return null;
@@ -345,6 +374,17 @@ function buildGatewayBaseUrl(env: Env): string | null {
 
 function toWorkersAiModel(model: string): string {
   return model.replace(/^workers-ai\//, '');
+}
+
+function resolveWorkersAiModel(model: string, env: Env): string {
+  const override = env.STUDY_AGENT_WORKERS_AI_MODEL?.trim();
+  if (override && override.length > 0) {
+    return toWorkersAiModel(override);
+  }
+  if (model.startsWith('workers-ai/') || model.startsWith('@cf/')) {
+    return toWorkersAiModel(model);
+  }
+  return DEFAULT_WORKERS_AI_MODEL;
 }
 
 function buildMissesSummary(misses: AgentMissSnapshot[]): string {
@@ -459,27 +499,32 @@ export async function planTelegramAgentRoute(input: AgentPlannerInput): Promise<
     weaknessContext,
     reviewContext,
     '',
+    'US chapter catalog (emergency-clinical-ultrasound source):',
+    'us-01=FAST, us-02=Focused Echo, us-03=Physics/Knobology, us-04=Resuscitative US,',
+    'us-05=Thoracic Ultrasound, us-06=Aorta, us-07=Hepatobiliary, us-08=Renal,',
+    'us-09=Pregnancy, us-10=Gynecologic, us-11=Soft Tissue, us-12=Ocular,',
+    'us-13=Procedural US, us-14=Airway/ENT, us-15=DVT/VTE, us-16=Testicular,',
+    'us-17=Bowel/Appendix, us-18=MSK.',
+    'Gottlieb POCUS: gp-01 through gp-31. ACEP Course: acep-01 through acep-23.',
+    '',
     'Allowed actions and when to use them:',
-    '- start: user wants to begin, study, quiz, or review a chapter (extract chapter name if given)',
-    '- resume: user wants to continue where they left off',
-    '- q1: user wants the first question of a chapter',
-    '- question: user asks for a specific question number (include question_number)',
-    '- ingest: user wants to process/sync/parse/ingest a PDF chapter',
-    '- ingest_status: user asks how ingest is going, how many questions were found, if it finished',
-    '- folders: user wants to see all available topic folders',
-    '- folder: user wants to open or select a specific folder (extract folder_query)',
-    '- pdfs: user wants to see PDFs in the current folder',
-    '- pdf: user wants to open a specific PDF (extract pdf_query)',
-    '- misses: user asks about wrong answers or wants to review mistakes (include limit 1-10)',
-    '- last_miss: user asks about the most recent mistake',
-    '- chat: use for greetings, out-of-scope questions, ambiguous input, or status updates. Include a helpful message.',
+    '- ingest: user wants to process/parse/load a NEW chapter not yet ingested, or says "review new chapter X". Extract chapter_id from name. ALWAYS prefer ingest over start for new chapters.',
+    '- start: user wants to begin studying/quizzing a chapter that is already loaded (has questions).',
+    '- resume: user wants to continue their current session where they left off.',
+    '- q1: user wants the first question of a chapter (question number 1).',
+    '- question: user asks for a specific question number (include question_number).',
+    '- ingest_status: user asks if ingest finished, how many questions were found, or checks progress.',
+    '- misses: user asks about wrong answers or wants to review mistakes (include limit 1-10, default 5).',
+    '- last_miss: user asks specifically about the most recent mistake.',
+    '- chat: greetings, out-of-scope, progress updates, or when no clear action. Always include a helpful next step.',
     '',
     'Rules:',
-    '- Never invent chapter IDs or source names.',
-    '- Prefer resume over start if there is an active session.',
-    '- Chapter aliases: FAST=us-01, aorta=us-06, renal=us-08, DVT=us-15, MSK=us-18.',
-    '- If user says "gp-" prefix, that is a Gottlieb chapter.',
-    '- For chat, always include a concrete suggestion of what the user can do next, and mention exam urgency or weak topics when relevant.',
+    '- Match chapter names to chapter_id using the catalog above. "focused echo" → us-02, "cardiac" → us-02, "chapter 5" → us-05, "echo" → us-02.',
+    '- When chapter_id cannot be determined, set chapter_name to the user\'s exact chapter phrase.',
+    '- Prefer resume over start when active_session is set and user is vague.',
+    '- "review new chapter X" or "lets do chapter X" or "ingest X" → use ingest action.',
+    '- For chat, mention the exam date, days remaining, or weak topics when relevant.',
+    '- Never invent chapter IDs not in the catalog.',
   ]
     .filter((line) => line !== undefined)
     .join('\n');
@@ -491,21 +536,18 @@ export async function planTelegramAgentRoute(input: AgentPlannerInput): Promise<
     daysRemaining !== null ? `days_remaining=${daysRemaining}` : null,
     input.topicWeaknesses.length > 0 ? `weak_topics=${input.topicWeaknesses.slice(0, 3).join(',')}` : null,
     input.topicsReviewDueCount > 0 ? `review_due_count=${input.topicsReviewDueCount}` : null,
-    `selected_folder=${input.selectedFolder ?? 'none'}`,
     `active_session=${input.activeSession.chapterId ? `${input.activeSession.chapterId}@q${(input.activeSession.questionIndex ?? 0) + 1}` : 'none'}`,
     `recent_misses:\n${buildMissesSummary(input.recentMisses)}`,
     `conversation_history:\n${historyToText(input.history)}`,
     `user_message:\n${input.userText}`,
     'JSON schema:',
     '{',
-    '  "action": "chat|misses|last_miss|folders|folder|pdfs|pdf|ingest|ingest_status|start|question|q1|resume|skill",',
-    '  "skill_id": "required when action=skill",',
+    '  "action": "chat|misses|last_miss|ingest|ingest_status|start|question|q1|resume",',
     '  "message": "required when action=chat",',
-    '  "folder_query": "required when action=folder",',
-    '  "pdf_query": "required when action=pdf",',
-    '  "chapter_id": "optional us-01 style for ingest|ingest_status|start|question|q1|resume",',
+    '  "chapter_id": "us-02 style ID from catalog above (preferred)",',
+    '  "chapter_name": "set this when chapter_id is unclear, e.g. \\"focused echo\\" or \\"chapter 3\\"",',
     '  "question_number": "required when action=question",',
-    '  "limit": "optional for misses"',
+    '  "limit": "optional integer for misses (1-10, default 5)"',
     '}',
   ]
     .filter((line): line is string => line !== null)
@@ -562,7 +604,7 @@ export async function planTelegramAgentRoute(input: AgentPlannerInput): Promise<
   }
 
   if (!decisionRaw && input.env.AI) {
-    const workersAiModel = toWorkersAiModel(model);
+    const workersAiModel = resolveWorkersAiModel(model, input.env);
     const baseAiPayload = {
       messages: payload.messages,
       temperature: payload.temperature,

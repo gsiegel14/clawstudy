@@ -8,8 +8,8 @@ import { buildAnswerFeedback, buildImageDescription, buildQuestionText } from '.
 import { verifyTwilioWebhookSignature } from './twilio-signature';
 import { normalizeChoice, parseAnswerBody, parseCompleteSourceBody, parseStartSessionBody, parseUploadUrlBody } from './validation';
 import type { Env, IdempotencyStore, QuizQuestion, StudyStore } from './types';
-import { planTelegramAgentRoute } from './study-agent';
-import type { AgentPlanner } from './study-agent';
+import { planTelegramAgentRoute, resolveChapterIdFromName } from './study-agent';
+import type { AgentPlanner, AgentMissSnapshot } from './study-agent';
 
 interface AppDependencies {
   store?: StudyStore;
@@ -64,6 +64,28 @@ function nowIso(deps: AppDependencies): string {
 
 function buildAgentPlanner(deps: AppDependencies): AgentPlanner {
   return deps.agentPlanner ?? planTelegramAgentRoute;
+}
+
+function resolveDecisionChapterId(chapterId: string | null, chapterName: string | null): string | null {
+  if (chapterId) return chapterId;
+  if (chapterName) return resolveChapterIdFromName(chapterName);
+  return null;
+}
+
+function formatMissesMessage(misses: AgentMissSnapshot[], limit: number): string {
+  const items = misses.slice(0, limit);
+  if (items.length === 0) return 'No recent misses — great work!';
+  const lines = items.map((m, i) => {
+    const stem = m.stem.replace(/\s+/g, ' ').trim().slice(0, 120);
+    return `${i + 1}. [${m.chapterId}] ${stem}\n   You chose ${m.selectedChoice}, correct was ${m.correctChoice}.`;
+  });
+  return `Recent misses (${items.length}):\n${lines.join('\n')}`;
+}
+
+function formatLastMissMessage(miss: AgentMissSnapshot | null): string {
+  if (!miss) return 'No misses recorded yet.';
+  const stem = miss.stem.replace(/\s+/g, ' ').trim().slice(0, 200);
+  return `Last miss [${miss.chapterId}]:\n${stem}\nYou chose ${miss.selectedChoice}, correct was ${miss.correctChoice}.\n${miss.explanation.slice(0, 300)}`;
 }
 
 function resolveR2Key(imageRef: string): string {
@@ -131,6 +153,15 @@ async function sendTelegramQuestion(env: Env, input: {
 
     const contentType = object.httpMetadata?.contentType ?? 'image/jpeg';
     const bytes = await object.arrayBuffer();
+
+    // Telegram limits photos to 10 MB
+    const TEN_MB = 10 * 1024 * 1024;
+    if (bytes.byteLength > TEN_MB) {
+      console.warn('telegram_image_too_large', { key, bytes: bytes.byteLength });
+      await sendTelegramMessage(env, input.chatId, fallbackText);
+      return;
+    }
+
     const filename = key.split('/').pop() || 'question-image.jpg';
     const formData = new FormData();
     formData.append('chat_id', input.chatId);
@@ -143,6 +174,8 @@ async function sendTelegramQuestion(env: Env, input: {
     });
 
     if (!response.ok) {
+      const errorBody = await response.text().catch(() => '');
+      console.warn('telegram_sendPhoto_failed', { key, status: response.status, body: errorBody });
       await sendTelegramMessage(env, input.chatId, fallbackText);
     }
   } catch {
@@ -989,11 +1022,46 @@ export function createApp(deps: AppDependencies = {}): Hono<{ Bindings: Env }> {
       return smsTwiMlResponse([decision.message ?? 'Send "start fast" to begin.']);
     }
 
+    if (decision.route === 'misses') {
+      return smsTwiMlResponse([formatMissesMessage(topicMasteryForSms.length > 0 ? [] : [], decision.limit)]);
+    }
+
+    if (decision.route === 'last_miss') {
+      return smsTwiMlResponse([formatLastMissMessage(null)]);
+    }
+
+    if (decision.route === 'ingest' || decision.route === 'ingest_status') {
+      const chapterId = resolveDecisionChapterId(decision.chapterId, decision.chapterName);
+      if (!chapterId) {
+        return smsTwiMlResponse(['Which chapter? Say e.g. "ingest focused echo" or "ingest us-02".']);
+      }
+      if (decision.route === 'ingest_status') {
+        const src = await store.getSourceByChapterId(chapterId);
+        if (!src) return smsTwiMlResponse([`No source found for ${chapterId}.`]);
+        return smsTwiMlResponse([`${chapterId}: ingest=${src.ingestStatus ?? 'not started'}, questions=${src.questionCount}`]);
+      }
+      // ingest route: trigger or report status
+      const src = await store.getSourceByChapterId(chapterId);
+      if (!src) return smsTwiMlResponse([`No uploaded source found for ${chapterId}. Upload the PDF first.`]);
+      if (src.questionCount > 0) {
+        return smsTwiMlResponse([`${chapterId} already has ${src.questionCount} questions. Say "start ${chapterId}" to begin.`]);
+      }
+      if (src.ingestStatus === 'processing' || src.ingestStatus === 'queued') {
+        return smsTwiMlResponse([`${chapterId} ingest already in progress (${src.ingestStatus}). Check back in a minute.`]);
+      }
+      try {
+        await store.completeSource(src.sourceId);
+        return smsTwiMlResponse([`Queued ingest for ${chapterId}. Check status with "ingest status ${chapterId}" in ~1 min.`]);
+      } catch {
+        return smsTwiMlResponse([`Could not queue ingest for ${chapterId}. Try again.`]);
+      }
+    }
+
     if (decision.route === 'start' || decision.route === 'resume' || decision.route === 'q1') {
       const chapterId =
         decision.route === 'resume'
           ? (activeSessionForPlanner?.chapterId ?? 'us-01')
-          : (decision.chapterId ?? 'us-01');
+          : (resolveDecisionChapterId(decision.chapterId, decision.chapterName) ?? 'us-01');
       const intentLabel: 'start' | 'q1' = decision.route === 'q1' ? 'q1' : 'start';
       const idempotencyKey = deriveSmsIdempotencyKey({
         fromPhone,
@@ -1013,9 +1081,7 @@ export function createApp(deps: AppDependencies = {}): Hono<{ Bindings: Env }> {
 
       const existing = await idemStore.get(idempotencyKey, '/v1/channel/sms/webhook');
       if (existing) {
-        if (existing.requestHash !== requestHash) {
-          return smsTwiMlResponse([]);
-        }
+        if (existing.requestHash !== requestHash) return smsTwiMlResponse([]);
         return smsTwiMlResponse([]);
       }
 
@@ -1039,7 +1105,7 @@ export function createApp(deps: AppDependencies = {}): Hono<{ Bindings: Env }> {
           nowIso: currentNowIso,
           ttlSeconds: IDEMPOTENCY_TTL_SECONDS,
         });
-        return smsTwiMlResponse(['Warming up question cache. Retry in a few seconds.']);
+        return smsTwiMlResponse([`${chapterId} not ready yet — say "ingest ${chapterId}" to process it first.`]);
       }
 
       await store.updateSessionPointer({
@@ -1061,9 +1127,7 @@ export function createApp(deps: AppDependencies = {}): Hono<{ Bindings: Env }> {
         explanation: question.explanation,
       });
       const messages = [questionText];
-      if (imageDescription) {
-        messages.push(`Image description: ${imageDescription}`);
-      }
+      if (imageDescription) messages.push(`Image description: ${imageDescription}`);
 
       await idemStore.put({
         idempotencyKey,
@@ -1078,7 +1142,7 @@ export function createApp(deps: AppDependencies = {}): Hono<{ Bindings: Env }> {
       return smsTwiMlResponse(messages);
     }
 
-    return smsTwiMlResponse(['Send "start fast" to begin, or A/B/C/D to answer.']);
+    return smsTwiMlResponse(['Try: "start fast", "ingest focused echo", "misses", or answer A/B/C/D.']);
   });
 
   app.post('/v1/channel/sms/status', async (c) => {
@@ -1271,7 +1335,7 @@ export function createApp(deps: AppDependencies = {}): Hono<{ Bindings: Env }> {
           stem: evaluated.payload.nextQuestion.stem,
           choices: evaluated.payload.nextQuestion.choices,
         });
-        const nextImageDescription = buildImageDescription({
+        const nextImageDescription = evaluated.payload.nextQuestion.imageDescription ?? buildImageDescription({
           imageRef: evaluated.payload.nextQuestion.imageRef,
           stem: evaluated.payload.nextQuestion.stem,
           explanation: evaluated.payload.nextQuestion.explanation,
@@ -1337,11 +1401,84 @@ export function createApp(deps: AppDependencies = {}): Hono<{ Bindings: Env }> {
       return c.json({ ok: true, status: 'chat' });
     }
 
+    if (decision.route === 'misses') {
+      const recentAttempts = await store.listRecentAttempts(userId, 20);
+      const misses: AgentMissSnapshot[] = recentAttempts
+        .filter((a) => !a.isCorrect)
+        .slice(0, decision.limit)
+        .map((a) => ({
+          questionId: a.questionId,
+          chapterId: a.chapterId,
+          sourceId: a.sourceId,
+          topic: a.topic,
+          selectedChoice: a.selectedChoice,
+          correctChoice: a.selectedChoice, // placeholder — not stored in attempt
+          stem: '',
+          explanation: '',
+          createdAt: a.createdAt,
+        }));
+      await sendTelegramMessage(c.env, chatId, formatMissesMessage(misses, decision.limit));
+      return c.json({ ok: true, status: 'misses' });
+    }
+
+    if (decision.route === 'last_miss') {
+      const recentAttempts = await store.listRecentAttempts(userId, 10);
+      const lastMiss = recentAttempts.find((a) => !a.isCorrect);
+      if (!lastMiss) {
+        await sendTelegramMessage(c.env, chatId, 'No misses recorded yet — keep going!');
+      } else {
+        const q = await store.getQuestionById(lastMiss.questionId);
+        const msg = q
+          ? `Last miss [${q.chapterId}]:\n${q.stem.slice(0, 200)}\nYou chose ${lastMiss.selectedChoice}, correct was ${q.correctChoice}.\n${q.explanation.slice(0, 300)}`
+          : `Last miss: question ${lastMiss.questionId} — you chose ${lastMiss.selectedChoice}.`;
+        await sendTelegramMessage(c.env, chatId, msg);
+      }
+      return c.json({ ok: true, status: 'last_miss' });
+    }
+
+    if (decision.route === 'ingest' || decision.route === 'ingest_status') {
+      const chapterId = resolveDecisionChapterId(decision.chapterId, decision.chapterName);
+      if (!chapterId) {
+        await sendTelegramMessage(c.env, chatId, 'Which chapter? Say e.g. "review new chapter focused echo" or "ingest us-02".');
+        return c.json({ ok: true, status: 'ingest_needs_chapter' });
+      }
+      if (decision.route === 'ingest_status') {
+        const src = await store.getSourceByChapterId(chapterId);
+        if (!src) {
+          await sendTelegramMessage(c.env, chatId, `No source found for ${chapterId}.`);
+        } else {
+          await sendTelegramMessage(c.env, chatId, `${chapterId}: ingest=${src.ingestStatus ?? 'not started'}, questions ready=${src.questionCount}`);
+        }
+        return c.json({ ok: true, status: 'ingest_status' });
+      }
+      // ingest route
+      const src = await store.getSourceByChapterId(chapterId);
+      if (!src) {
+        await sendTelegramMessage(c.env, chatId, `No uploaded source found for ${chapterId}. Upload the PDF first via Telegram or the API.`);
+        return c.json({ ok: true, status: 'ingest_no_source' });
+      }
+      if (src.questionCount > 0) {
+        await sendTelegramMessage(c.env, chatId, `${chapterId} already has ${src.questionCount} questions ready. Say "start ${chapterId}" to begin studying.`);
+        return c.json({ ok: true, status: 'ingest_already_done' });
+      }
+      if (src.ingestStatus === 'processing' || src.ingestStatus === 'queued') {
+        await sendTelegramMessage(c.env, chatId, `${chapterId} ingest is already in progress (${src.ingestStatus}). Check back in ~1 minute.`);
+        return c.json({ ok: true, status: 'ingest_in_progress' });
+      }
+      try {
+        await store.completeSource(src.sourceId);
+        await sendTelegramMessage(c.env, chatId, `Queued ingest for ${chapterId}. I'll have questions ready in ~1 minute. Say "ingest status ${chapterId}" to check.`);
+      } catch {
+        await sendTelegramMessage(c.env, chatId, `Could not queue ingest for ${chapterId}. Try again.`);
+      }
+      return c.json({ ok: true, status: 'ingest_queued' });
+    }
+
     if (decision.route === 'start' || decision.route === 'resume' || decision.route === 'q1') {
       const chapterId =
         decision.route === 'resume'
           ? (activeSessionForPlanner?.chapterId ?? 'us-01')
-          : (decision.chapterId ?? 'us-01');
+          : (resolveDecisionChapterId(decision.chapterId, decision.chapterName) ?? 'us-01');
       const intentLabel: 'start' | 'q1' = decision.route === 'q1' ? 'q1' : 'start';
       const idempotencyKey = deriveTelegramIdempotencyKey({
         chatId,
@@ -1360,18 +1497,12 @@ export function createApp(deps: AppDependencies = {}): Hono<{ Bindings: Env }> {
 
       const existing = await idemStore.get(idempotencyKey, '/v1/telegram/webhook');
       if (existing) {
-        if (existing.requestHash !== requestHash) {
-          return c.json({ ok: true, status: 'idempotency_conflict_ignored' });
-        }
+        if (existing.requestHash !== requestHash) return c.json({ ok: true, status: 'idempotency_conflict_ignored' });
         return c.json({ ok: true, deduped: true });
       }
 
       if (chatType !== 'private') {
-        await sendTelegramMessage(
-          c.env,
-          chatId,
-          'Only direct-message Telegram chats are supported for study sessions.',
-        );
+        await sendTelegramMessage(c.env, chatId, 'Only direct-message Telegram chats are supported for study sessions.');
         await idemStore.put({
           idempotencyKey,
           endpoint: '/v1/telegram/webhook',
@@ -1395,7 +1526,7 @@ export function createApp(deps: AppDependencies = {}): Hono<{ Bindings: Env }> {
       const questionIndex = decision.route === 'q1' ? 0 : session.currentQuestionIndex;
       const question = await store.getQuestionByIndex(chapterId, questionIndex);
       if (!question) {
-        await sendTelegramMessage(c.env, chatId, 'Warming up question cache. Retry in a few seconds.');
+        await sendTelegramMessage(c.env, chatId, `${chapterId} isn't ready yet — say "ingest ${chapterId}" to process it first.`);
         await idemStore.put({
           idempotencyKey,
           endpoint: '/v1/telegram/webhook',
@@ -1421,7 +1552,7 @@ export function createApp(deps: AppDependencies = {}): Hono<{ Bindings: Env }> {
         stem: question.stem,
         choices: question.choices,
       });
-      const imageDescription = buildImageDescription({
+      const imageDescription = question.imageDescription ?? buildImageDescription({
         imageRef: question.imageRef,
         stem: question.stem,
         explanation: question.explanation,
@@ -1448,7 +1579,7 @@ export function createApp(deps: AppDependencies = {}): Hono<{ Bindings: Env }> {
     }
 
     // Fallback for unrecognized agent routes
-    await sendTelegramMessage(c.env, chatId, 'Send "start fast" to begin, or A/B/C/D to answer.');
+    await sendTelegramMessage(c.env, chatId, 'Try: "start fast", "review new chapter focused echo", "misses", or A/B/C/D to answer.');
     return c.json({ ok: true, status: 'fallback' });
   });
 
