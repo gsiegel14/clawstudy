@@ -8,8 +8,8 @@ import { buildAnswerFeedback, buildImageDescription, buildQuestionText } from '.
 import { verifyTwilioWebhookSignature } from './twilio-signature';
 import { normalizeChoice, parseAnswerBody, parseCompleteSourceBody, parseStartSessionBody, parseUploadUrlBody } from './validation';
 import type { Env, IdempotencyStore, QuizQuestion, StudyStore } from './types';
-import { planTelegramAgentRoute, resolveChapterIdFromName } from './study-agent';
-import type { AgentPlanner, AgentMissSnapshot } from './study-agent';
+import { planTelegramAgentRoute, resolveChapterIdFromName, runAgentWithTools, isStudyAgentEnabled } from './study-agent';
+import type { AgentPlanner, AgentMissSnapshot, AgentToolExecutor } from './study-agent';
 
 interface AppDependencies {
   store?: StudyStore;
@@ -86,6 +86,74 @@ function formatLastMissMessage(miss: AgentMissSnapshot | null): string {
   if (!miss) return 'No misses recorded yet.';
   const stem = miss.stem.replace(/\s+/g, ' ').trim().slice(0, 200);
   return `Last miss [${miss.chapterId}]:\n${stem}\nYou chose ${miss.selectedChoice}, correct was ${miss.correctChoice}.\n${miss.explanation.slice(0, 300)}`;
+}
+
+function buildToolExecutor(store: StudyStore, userId: string): AgentToolExecutor {
+  return {
+    async checkChapterStatus(chapterId) {
+      const src = await store.getSourceByChapterId(chapterId);
+      if (!src) return { found: false, questionCount: 0, ingestStatus: null };
+      return { found: true, questionCount: src.questionCount, ingestStatus: src.ingestStatus };
+    },
+
+    async queueChapterIngest(chapterId) {
+      const src = await store.getSourceByChapterId(chapterId);
+      if (!src) return { success: false, alreadyDone: false, alreadyInProgress: false, noSourceFound: true };
+      if (src.questionCount > 0) return { success: false, alreadyDone: true, alreadyInProgress: false, noSourceFound: false };
+      if (src.ingestStatus === 'processing' || src.ingestStatus === 'queued') {
+        return { success: false, alreadyDone: false, alreadyInProgress: true, noSourceFound: false };
+      }
+      try {
+        await store.completeSource(src.sourceId);
+        return { success: true, alreadyDone: false, alreadyInProgress: false, noSourceFound: false };
+      } catch {
+        return { success: false, alreadyDone: false, alreadyInProgress: false, noSourceFound: false };
+      }
+    },
+
+    async getRecentMisses(limit) {
+      const attempts = await store.listRecentAttempts(userId, 20);
+      const missed = attempts.filter((a) => !a.isCorrect).slice(0, limit);
+      const misses = await Promise.all(
+        missed.map(async (a) => {
+          const q = await store.getQuestionById(a.questionId);
+          return {
+            chapterId: a.chapterId,
+            topic: a.topic,
+            selectedChoice: a.selectedChoice,
+            correctChoice: q?.correctChoice ?? '?',
+            stem: (q?.stem ?? '').slice(0, 120),
+          };
+        }),
+      );
+      return { misses };
+    },
+
+    async checkSessionReady(chapterId) {
+      const src = await store.getSourceByChapterId(chapterId);
+      const questionCount = src?.questionCount ?? 0;
+      const firstQuestion = questionCount > 0 ? await store.getQuestionByIndex(chapterId, 0) : null;
+      return { questionsAvailable: firstQuestion !== null, questionCount };
+    },
+
+    async getProgressSummary() {
+      const [progress, mastery] = await Promise.all([store.listProgress(userId), store.listTopicMastery(userId)]);
+      const totalAnswered = progress.reduce((sum, p) => sum + p.questionsAnswered, 0);
+      const totalCorrect = progress.reduce((sum, p) => sum + p.questionsCorrect, 0);
+      const accuracy = totalAnswered > 0 ? Math.round((totalCorrect / totalAnswered) * 100) : null;
+      const weakTopics = mastery
+        .filter((t) => t.weaknessRank !== null)
+        .sort((a, b) => (a.weaknessRank ?? 999) - (b.weaknessRank ?? 999))
+        .slice(0, 3)
+        .map((t) => t.topic);
+      return {
+        totalAnswered,
+        accuracy,
+        chaptersStudied: progress.filter((p) => p.questionsAnswered > 0).length,
+        topWeakTopics: weakTopics,
+      };
+    },
+  };
 }
 
 function resolveR2Key(imageRef: string): string {
@@ -1361,7 +1429,7 @@ export function createApp(deps: AppDependencies = {}): Hono<{ Bindings: Env }> {
       return c.json({ ok: true, status: 'answer_processed' });
     }
 
-    // 3. LLM planner — handles all other text
+    // 3. LLM agent — tool-calling path first, routing fallback
     const [activeSessionForPlanner, topicMasteryForTg] = await Promise.all([
       store.getActiveSessionByUser(userId),
       store.listTopicMastery(userId),
@@ -1374,6 +1442,62 @@ export function createApp(deps: AppDependencies = {}): Hono<{ Bindings: Env }> {
     const tgReviewDueCount = topicMasteryForTg.filter(
       (t) => t.nextReviewAt !== null && t.nextReviewAt <= currentNowIso,
     ).length;
+
+    // Tool-calling path: LLM has real tools and executes them, then responds naturally
+    if (isStudyAgentEnabled(c.env) && !deps.agentPlanner) {
+      const executor = buildToolExecutor(store, userId);
+      const toolResult = await runAgentWithTools({
+        env: c.env,
+        nowIso: currentNowIso,
+        userText: text,
+        activeSession: {
+          chapterId: activeSessionForPlanner?.chapterId ?? null,
+          questionIndex: activeSessionForPlanner?.currentQuestionIndex ?? null,
+        },
+        examDate: c.env.EXAM_DATE ?? null,
+        topicWeaknesses: tgWeakTopics,
+        topicsReviewDueCount: tgReviewDueCount,
+        executor,
+      });
+
+      if (toolResult) {
+        await sendTelegramMessage(c.env, chatId, toolResult.message);
+
+        if (toolResult.pendingStart) {
+          const { chapterId } = toolResult.pendingStart;
+          const session = await store.getOrCreateSession({
+            chapterId,
+            userId,
+            telegramUserId: fromId,
+            telegramChatId: chatId,
+            nowIso: currentNowIso,
+          });
+          const question = await store.getQuestionByIndex(chapterId, session.currentQuestionIndex);
+          if (question) {
+            await store.updateSessionPointer({
+              sessionId: session.sessionId,
+              questionIndex: session.currentQuestionIndex,
+              lastQuestionId: session.lastQuestionId,
+              currentQuestionPresentedAt: currentNowIso,
+              nowIso: currentNowIso,
+            });
+            const questionText = buildQuestionText({
+              questionNumber: session.currentQuestionIndex + 1,
+              stem: question.stem,
+              choices: question.choices,
+            });
+            const imageDescription =
+              question.imageDescription ??
+              buildImageDescription({ imageRef: question.imageRef, stem: question.stem, explanation: question.explanation });
+            await sendTelegramQuestion(c.env, { chatId, questionText, imageRef: question.imageRef, imageDescription });
+          }
+        }
+
+        return c.json({ ok: true, status: 'agent_tool_response' });
+      }
+      // Fall through to routing if tool-calling returned null
+    }
+
     const decision = await buildAgentPlanner(deps)({
       env: c.env,
       nowIso: currentNowIso,

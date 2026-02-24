@@ -639,3 +639,331 @@ export async function planTelegramAgentRoute(input: AgentPlannerInput): Promise<
   }
   return normalizeDecision(decisionRaw);
 }
+
+// ---- Tool-calling agent ----
+
+export interface AgentToolDef {
+  type: 'function';
+  function: {
+    name: string;
+    description: string;
+    parameters: Record<string, unknown>;
+  };
+}
+
+export interface AgentToolExecutor {
+  checkChapterStatus(chapterId: string): Promise<{
+    found: boolean;
+    questionCount: number;
+    ingestStatus: string | null;
+  }>;
+  queueChapterIngest(chapterId: string): Promise<{
+    success: boolean;
+    alreadyDone: boolean;
+    alreadyInProgress: boolean;
+    noSourceFound: boolean;
+  }>;
+  getRecentMisses(limit: number): Promise<{
+    misses: Array<{ chapterId: string; topic: string; selectedChoice: string; correctChoice: string; stem: string }>;
+  }>;
+  checkSessionReady(chapterId: string): Promise<{
+    questionsAvailable: boolean;
+    questionCount: number;
+  }>;
+  getProgressSummary(): Promise<{
+    totalAnswered: number;
+    accuracy: number | null;
+    chaptersStudied: number;
+    topWeakTopics: string[];
+  }>;
+}
+
+export interface AgentToolCallInput {
+  env: Env;
+  nowIso: string;
+  userText: string;
+  activeSession: { chapterId: string | null; questionIndex: number | null };
+  examDate: string | null;
+  topicWeaknesses: string[];
+  topicsReviewDueCount: number;
+  executor: AgentToolExecutor;
+}
+
+export interface AgentToolCallResult {
+  message: string;
+  pendingStart?: { chapterId: string };
+}
+
+const STUDY_TOOLS: AgentToolDef[] = [
+  {
+    type: 'function',
+    function: {
+      name: 'check_chapter_status',
+      description:
+        'Check if a chapter has been ingested and how many study questions are available. Always call this before queueing ingest or starting a session.',
+      parameters: {
+        type: 'object',
+        properties: {
+          chapter_id: {
+            type: 'string',
+            description: 'Chapter ID: us-01..us-18 (Emergency Ultrasound), gp-01..gp-31 (Gottlieb POCUS), acep-01..acep-23 (ACEP Course)',
+          },
+        },
+        required: ['chapter_id'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'queue_chapter_ingest',
+      description:
+        'Queue a chapter PDF for question extraction. Only call if check_chapter_status shows 0 questions and ingest is not already running.',
+      parameters: {
+        type: 'object',
+        properties: {
+          chapter_id: { type: 'string', description: 'Chapter ID to queue for ingest' },
+        },
+        required: ['chapter_id'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'start_chapter_session',
+      description:
+        'Start or resume a study session for a chapter. Only call if check_chapter_status shows questionCount > 0.',
+      parameters: {
+        type: 'object',
+        properties: {
+          chapter_id: { type: 'string', description: 'Chapter ID to start studying' },
+        },
+        required: ['chapter_id'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'get_recent_misses',
+      description: "Get the user's recent incorrect answers for review.",
+      parameters: {
+        type: 'object',
+        properties: {
+          limit: { type: 'integer', description: 'Number of misses to return, 1-10, default 5' },
+        },
+        required: [],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'get_progress_summary',
+      description: "Get a summary of the user's overall study progress, weak topics, and exam countdown.",
+      parameters: {
+        type: 'object',
+        properties: {},
+        required: [],
+      },
+    },
+  },
+];
+
+type ToolMessage = {
+  role: string;
+  content: string | null;
+  tool_calls?: Array<{ id: string; type: string; function: { name: string; arguments: string } }>;
+  tool_call_id?: string;
+};
+
+function resolveToolChapterId(raw: unknown): string | null {
+  const str = coerceString(raw);
+  if (!str) return null;
+  return normalizeChapterId(str) ?? resolveChapterIdFromName(str);
+}
+
+export async function runAgentWithTools(input: AgentToolCallInput): Promise<AgentToolCallResult | null> {
+  if (!isStudyAgentEnabled(input.env)) return null;
+
+  const model =
+    input.env.CF_AI_GATEWAY_MODEL?.trim().length ? input.env.CF_AI_GATEWAY_MODEL.trim() : DEFAULT_AGENT_MODEL;
+  const examDate = input.examDate ?? input.env.EXAM_DATE ?? null;
+  const daysRemaining = examDate ? daysUntil(examDate, input.nowIso) : null;
+
+  const contextLines: string[] = [];
+  if (examDate) contextLines.push(`Exam: ${examDate} (${daysRemaining ?? '?'} days away)`);
+  if (input.topicWeaknesses.length > 0) contextLines.push(`Weak topics: ${input.topicWeaknesses.slice(0, 3).join(', ')}`);
+  if (input.topicsReviewDueCount > 0) contextLines.push(`Topics due for review: ${input.topicsReviewDueCount}`);
+  if (input.activeSession.chapterId) {
+    contextLines.push(`Active session: ${input.activeSession.chapterId} at Q${(input.activeSession.questionIndex ?? 0) + 1}`);
+  }
+
+  const systemPrompt = [
+    'You are ClawStudy, an emergency medicine board-prep assistant.',
+    'Use the provided tools to take real actions. Never assume question counts or ingest status — always check first.',
+    contextLines.length > 0 ? `Study context: ${contextLines.join(' | ')}` : null,
+    '',
+    'Chapter catalog — US (emergency-clinical-ultrasound):',
+    'us-01=FAST, us-02=Focused Echo, us-03=Physics, us-04=Resuscitative US, us-05=Thoracic,',
+    'us-06=Aorta, us-07=Hepatobiliary, us-08=Renal, us-09=Pregnancy, us-10=Gynecologic,',
+    'us-11=Soft Tissue, us-12=Ocular, us-13=Procedural, us-14=Airway/ENT, us-15=DVT,',
+    'us-16=Testicular, us-17=Bowel/Appendix, us-18=MSK',
+    'Gottlieb POCUS: gp-01..gp-31. ACEP Course: acep-01..acep-23.',
+    '',
+    'Tool decision rules:',
+    '- "ingest X" / "review new chapter X" / "load X": call check_chapter_status first, then queue_chapter_ingest if 0 questions',
+    '- "start X" / "study X" / "quiz me on X": call check_chapter_status first, then start_chapter_session if questions > 0',
+    '- "how is ingest going" / "status of X": call check_chapter_status',
+    '- "misses" / "wrong answers" / "what did I miss": call get_recent_misses',
+    '- "progress" / "how am I doing" / "stats": call get_progress_summary',
+    '- After tool results: respond concisely (2-3 sentences). Confirm what was done and what happens next.',
+    '- For start_chapter_session: tell user a question is coming shortly.',
+  ]
+    .filter((line): line is string => line !== null)
+    .join('\n');
+
+  const messages: ToolMessage[] = [
+    { role: 'system', content: systemPrompt },
+    { role: 'user', content: input.userText },
+  ];
+
+  let pendingStart: { chapterId: string } | undefined;
+  const MAX_ROUNDS = 3;
+  const apiKey = input.env.CLOUDFLARE_AI_GATEWAY_API_KEY;
+  const gatewayBaseUrl = buildGatewayBaseUrl(input.env);
+  const useGateway = Boolean(apiKey?.trim().length && gatewayBaseUrl);
+
+  for (let round = 0; round < MAX_ROUNDS; round++) {
+    const payload: Record<string, unknown> = {
+      model,
+      temperature: 0.2,
+      max_tokens: 500,
+      tools: STUDY_TOOLS,
+      tool_choice: 'auto',
+      messages,
+    };
+
+    let assistantMsg: ToolMessage | null = null;
+
+    if (useGateway && apiKey) {
+      try {
+        const response = await fetch(`${gatewayBaseUrl!}/chat/completions`, {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            authorization: `Bearer ${apiKey}`,
+            'cf-aig-authorization': `Bearer ${apiKey}`,
+          },
+          body: JSON.stringify(payload),
+        });
+
+        if (response.ok) {
+          const data = (await response.json()) as Record<string, unknown>;
+          const choices = Array.isArray(data.choices) ? data.choices : [];
+          const fc = choices[0] as Record<string, unknown> | undefined;
+          if (fc?.message && typeof fc.message === 'object') {
+            assistantMsg = fc.message as ToolMessage;
+          }
+        } else {
+          const errText = await response.text().catch(() => '');
+          console.warn('tool_agent_gateway_error', { status: response.status, body: trimToLength(errText, 200) });
+        }
+      } catch (error) {
+        console.warn('tool_agent_gateway_exception', { error: error instanceof Error ? error.message : String(error) });
+      }
+    }
+
+    // Workers AI binding fallback (text only — tool calls not guaranteed on binding)
+    if (!assistantMsg && input.env.AI) {
+      try {
+        const workersModel = resolveWorkersAiModel(model, input.env);
+        const result = await input.env.AI.run(workersModel as keyof AiModels, {
+          messages: messages.map((m) => ({ role: m.role, content: m.content ?? '' })),
+          temperature: payload.temperature as number,
+          max_tokens: payload.max_tokens as number,
+        } as Parameters<Ai['run']>[1]);
+
+        if (result && typeof result === 'object') {
+          const r = result as Record<string, unknown>;
+          const content = coerceString(r.response) ?? coerceString(r.output_text) ?? null;
+          if (content) {
+            assistantMsg = { role: 'assistant', content };
+          }
+        }
+      } catch (error) {
+        console.warn('tool_agent_workers_ai_error', { error: error instanceof Error ? error.message : String(error) });
+      }
+    }
+
+    if (!assistantMsg) return null;
+
+    messages.push(assistantMsg);
+
+    // No tool calls → final text response
+    const toolCalls = assistantMsg.tool_calls;
+    if (!toolCalls || !Array.isArray(toolCalls) || toolCalls.length === 0) {
+      const content = extractContent(assistantMsg.content);
+      if (!content) return null;
+      return { message: trimToLength(content, 800), pendingStart };
+    }
+
+    // Execute tool calls and collect results
+    for (const rawCall of toolCalls) {
+      const toolCallId = rawCall.id ?? `call_${round}_${Date.now()}`;
+      const toolName = rawCall.function?.name ?? '';
+      let toolArgs: Record<string, unknown> = {};
+      try {
+        toolArgs = JSON.parse(rawCall.function?.arguments ?? '{}') as Record<string, unknown>;
+      } catch {
+        // ignore parse errors — toolArgs stays empty
+      }
+
+      let toolResult: Record<string, unknown>;
+
+      if (toolName === 'check_chapter_status') {
+        const chapterId = resolveToolChapterId(toolArgs.chapter_id);
+        if (!chapterId) {
+          toolResult = { error: 'Chapter not recognized. Valid formats: us-01..us-18, gp-01..gp-31, acep-01..acep-23' };
+        } else {
+          toolResult = { chapter_id: chapterId, ...(await input.executor.checkChapterStatus(chapterId)) };
+        }
+      } else if (toolName === 'queue_chapter_ingest') {
+        const chapterId = resolveToolChapterId(toolArgs.chapter_id);
+        if (!chapterId) {
+          toolResult = { error: 'Chapter not recognized' };
+        } else {
+          toolResult = { chapter_id: chapterId, ...(await input.executor.queueChapterIngest(chapterId)) };
+        }
+      } else if (toolName === 'start_chapter_session') {
+        const chapterId = resolveToolChapterId(toolArgs.chapter_id);
+        if (!chapterId) {
+          toolResult = { error: 'Chapter not recognized' };
+        } else {
+          const result = await input.executor.checkSessionReady(chapterId);
+          if (result.questionsAvailable) {
+            pendingStart = { chapterId };
+          }
+          toolResult = { chapter_id: chapterId, ...result };
+        }
+      } else if (toolName === 'get_recent_misses') {
+        const limit = Math.max(1, Math.min(10, Number(toolArgs.limit) || 5));
+        toolResult = await input.executor.getRecentMisses(limit);
+      } else if (toolName === 'get_progress_summary') {
+        toolResult = await input.executor.getProgressSummary();
+      } else {
+        toolResult = { error: `Unknown tool: ${toolName}` };
+      }
+
+      messages.push({
+        role: 'tool',
+        tool_call_id: toolCallId,
+        content: JSON.stringify(toolResult),
+      });
+    }
+  }
+
+  // Max rounds exceeded without a final text response
+  return null;
+}
