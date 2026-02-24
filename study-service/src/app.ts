@@ -666,6 +666,85 @@ export function createApp(deps: AppDependencies = {}): Hono<{ Bindings: Env }> {
     });
   });
 
+  // Chapter-centric endpoints for moltworker CLI and OpenClaw agent use
+  const US_CHAPTER_NAMES: Record<string, string> = {
+    'us-01': 'FAST', 'us-02': 'Focused Echo', 'us-03': 'Physics/Knobology',
+    'us-04': 'Resuscitative US', 'us-05': 'Thoracic Ultrasound', 'us-06': 'Aorta',
+    'us-07': 'Hepatobiliary', 'us-08': 'Renal', 'us-09': 'Pregnancy',
+    'us-10': 'Gynecologic', 'us-11': 'Soft Tissue', 'us-12': 'Ocular',
+    'us-13': 'Procedural US', 'us-14': 'Airway/ENT', 'us-15': 'DVT/VTE',
+    'us-16': 'Testicular', 'us-17': 'Bowel/Appendix', 'us-18': 'MSK',
+  };
+  const chapterName = (id: string) => US_CHAPTER_NAMES[id] ?? id;
+
+  app.get('/v1/chapters/:chapterId/status', async (c) => {
+    const store = buildStore(c, deps);
+    const chapterId = c.req.param('chapterId');
+    const src = await store.getSourceByChapterId(chapterId);
+    return c.json({
+      schema_version: schemaVersion(c),
+      chapter_id: chapterId,
+      chapter_name: chapterName(chapterId),
+      found: src !== null,
+      question_count: src?.questionCount ?? 0,
+      ingest_status: src?.ingestStatus ?? null,
+      source_id: src?.sourceId ?? null,
+    });
+  });
+
+  app.post('/v1/chapters/:chapterId/ingest', async (c) => {
+    const store = buildStore(c, deps);
+    const chapterId = c.req.param('chapterId');
+    const src = await store.getSourceByChapterId(chapterId);
+
+    if (!src) {
+      return jsonError(c, 404, 'NOT_FOUND', `No uploaded source found for ${chapterId}. Upload the PDF first.`);
+    }
+
+    if (src.questionCount > 0) {
+      return c.json({
+        schema_version: schemaVersion(c),
+        status: 'already_done',
+        chapter_id: chapterId,
+        chapter_name: chapterName(chapterId),
+        question_count: src.questionCount,
+        ingest_status: src.ingestStatus,
+        source_id: src.sourceId,
+        message: `${chapterId} already has ${src.questionCount} questions. Say "start ${chapterId}" to study.`,
+      });
+    }
+
+    if (src.ingestStatus === 'processing' || src.ingestStatus === 'queued') {
+      return c.json({
+        schema_version: schemaVersion(c),
+        status: 'in_progress',
+        chapter_id: chapterId,
+        chapter_name: chapterName(chapterId),
+        question_count: 0,
+        ingest_status: src.ingestStatus,
+        source_id: src.sourceId,
+        message: `${chapterId} ingest is already ${src.ingestStatus}. Check back in ~1 minute.`,
+      });
+    }
+
+    try {
+      const result = await store.completeSource(src.sourceId);
+      return c.json({
+        schema_version: schemaVersion(c),
+        status: 'queued',
+        chapter_id: chapterId,
+        chapter_name: chapterName(chapterId),
+        ingest_job_id: result.ingestJobId,
+        question_count: 0,
+        ingest_status: 'queued',
+        source_id: src.sourceId,
+        message: `Ingest queued for ${chapterId} (${chapterName(chapterId)}). Questions ready in ~1 minute.`,
+      }, 202);
+    } catch {
+      return jsonError(c, 500, 'INGEST_FAILED', `Failed to queue ingest for ${chapterId}`);
+    }
+  });
+
   app.post('/v1/admin/seed/fast-pilot', async (c) => {
     return withIdempotentJson(c, deps, '/v1/admin/seed/fast-pilot', async (body, _idempotencyKey, nowIsoValue) => {
       if (!body || typeof body !== 'object' || Array.isArray(body)) {

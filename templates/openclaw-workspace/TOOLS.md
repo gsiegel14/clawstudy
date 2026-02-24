@@ -2,10 +2,37 @@
 
 Environment-specific tool notes for the ClawStudy moltworker workspace.
 
+## claw.sh — Primary CLI (use this first)
+
+Path: `/Applications/clawstudy/scripts/claw.sh`
+
+```bash
+# Check one chapter status (question count, ingest status)
+bash /Applications/clawstudy/scripts/claw.sh status us-02
+
+# Check all chapters
+bash /Applications/clawstudy/scripts/claw.sh status
+
+# Trigger ingest for a chapter
+bash /Applications/clawstudy/scripts/claw.sh ingest us-02
+
+# Trigger a whole batch
+bash /Applications/clawstudy/scripts/claw.sh ingest-batch us   # us-01..us-18
+bash /Applications/clawstudy/scripts/claw.sh ingest-batch acep  # acep-01..acep-23
+bash /Applications/clawstudy/scripts/claw.sh ingest-batch gp    # gp-01..gp-31
+
+# Full health check
+bash /Applications/clawstudy/scripts/claw.sh heartbeat
+```
+
+If auth is required: `export CLAWSTUDY_TOKEN=<token>`
+
 ## Study Service
 
 - endpoint: `https://clawstudy-study-service.siegel-gabe.workers.dev`
 - health: `curl -fsS https://clawstudy-study-service.siegel-gabe.workers.dev/healthz`
+- chapter status: `curl -fsS https://clawstudy-study-service.siegel-gabe.workers.dev/v1/chapters/us-02/status`
+- trigger ingest: `curl -X POST https://clawstudy-study-service.siegel-gabe.workers.dev/v1/chapters/us-02/ingest -H "Content-Type: application/json" -d '{}'`
 
 ## R2
 

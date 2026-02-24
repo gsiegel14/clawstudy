@@ -83,6 +83,33 @@ for name in "${FILES[@]}"; do
   written=$((written + 1))
 done
 
+# Copy skills/ directory tree
+if [ -d "$TEMPLATE_DIR/skills" ]; then
+  for skill_dir in "$TEMPLATE_DIR/skills"/*/; do
+    [ -d "$skill_dir" ] || continue
+    skill_name=$(basename "$skill_dir")
+    src_skill="$skill_dir/SKILL.md"
+    dst_skill_dir="$TARGET_DIR/skills/$skill_name"
+    dst_skill="$dst_skill_dir/SKILL.md"
+
+    mkdir -p "$dst_skill_dir"
+
+    if [ ! -f "$src_skill" ]; then
+      continue
+    fi
+
+    if [ -f "$dst_skill" ] && [ "$FORCE" != "true" ]; then
+      echo "[skip] $dst_skill (already exists)"
+      skipped=$((skipped + 1))
+      continue
+    fi
+
+    install -m 0644 "$src_skill" "$dst_skill"
+    echo "[write] $dst_skill"
+    written=$((written + 1))
+  done
+fi
+
 echo ""
 echo "Workspace template sync complete"
 echo "Target: $TARGET_DIR"
