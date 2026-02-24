@@ -51,12 +51,11 @@ Out of scope:
 1. Command resolution:
 - Normalize user chapter input to canonical `chapter_id`.
 - Support at least `FAST`, `US-01`, and `Chapter 1`.
-2. Intent parser:
-- Recognize at minimum:
-  - start intent: `start fast`, `lets start fast`, `let's start fast`
-  - first-question intent: `question 1`, `q1`
-  - answer intent: `A/B/C/D`, `1/2/3/4`
-- Parser must be case-insensitive and punctuation-tolerant.
+2. Intent routing:
+- A/B/C/D answer input is detected deterministically via `normalizeChoice()` — no LLM call.
+- All other text is routed through the LLM planner (`planTelegramAgentRoute`), which maps natural-language input to a `route` value (`start`, `resume`, `question`, `folders`, `folder`, `pdf`, `misses`, `chat`, etc.).
+- PDF documents sent to the bot are detected by MIME type and queued for ingest before text handling.
+- There is no regex/keyword parser. The LLM handles all natural-language variation.
 3. Session handling:
 - Maximum one active chapter session per user.
 - Resume active session on repeated `START FAST`.

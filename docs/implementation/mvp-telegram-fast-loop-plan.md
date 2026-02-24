@@ -55,9 +55,7 @@ In scope for MVP:
 4. Answer evaluation and explanation response.
 5. Correct/incorrect tracking with chapter-level progress.
 6. Idempotent write APIs with `Idempotency-Key`.
-7. Natural-language intent support:
-- `lets start fast`
-- `question 1`/`q1`
+7. Agent-first intent routing: LLM planner handles all natural-language input; A/B/C/D is the only deterministic fast-path.
 
 Out of scope for MVP:
 

@@ -1,7 +1,7 @@
 {
-  "schema_version": "1.2.0",
+  "schema_version": "1.3.0",
   "owner": "gabe",
-  "last_updated": "2026-02-23T23:10:00Z",
+  "last_updated": "2026-02-24T01:04:00Z",
   "exam_date": "2026-03-31",
   "source_batch": "emergency-clinical-ultrasound-2026-02-23",
   "ingestion_summary": {
@@ -406,6 +406,13 @@
       "additional_source_batches": "Tracks secondary uploaded source batches and section-level generation targets.",
       "question_progress_file": "CSV tracker for pair-level draft/review/approval/publish status.",
       "status_values": "uploaded_waiting_ingest|ingesting|question_generation_in_progress|ready_for_delivery"
+    },
+    "agent_first_routing_v1_3": {
+      "routing_model": "LLM planner (planTelegramAgentRoute) is the sole intent router for Telegram and SMS.",
+      "answer_fast_path": "A/B/C/D detection via normalizeChoice() bypasses planner entirely.",
+      "pdf_upload": "Telegram PDF documents are detected by MIME type, downloaded, stored to R2, and queued for ingest.",
+      "no_parser": "parseTelegramIntent() has been removed. There is no regex/keyword parser.",
+      "planner_model": "Default model is llama-3.3-70b-instruct-fp8-fast; overridden by CF_AI_GATEWAY_MODEL env var."
     }
   },
   "additional_source_batches": [

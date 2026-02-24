@@ -1,0 +1,32 @@
+chapter_id,chapter_num,chapter_name,file_name,r2_key,min_questions,target_questions
+gp-00,0,"Intro","Ch. 0 Intro.pdf",sources/gottlieb-pocus-by-chapter/ch.-0-intro.pdf,25,30
+gp-01,1,"Intro","Ch.1_Intro.pdf",sources/gottlieb-pocus-by-chapter/ch.1_intro.pdf,25,30
+gp-02,2,"Ultrasound Physics Knobology and Safety","Ch.2_Ultrasound_Physics_Knobology_and Safety.pdf",sources/gottlieb-pocus-by-chapter/ch.2_ultrasound_physics_knobology_and-safety.pdf,25,30
+gp-03,3,"Ultrasound for Trauma Evaluation","Ch.3_Ultrasound_for_Trauma_Evaluation.pdf",sources/gottlieb-pocus-by-chapter/ch.3_ultrasound_for_trauma_evaluation.pdf,25,30
+gp-04,4,"Core cardiac ultrasound","Ch.4_Core_cardiac_ultrasound.pdf",sources/gottlieb-pocus-by-chapter/ch.4_core_cardiac_ultrasound.pdf,25,30
+gp-05,5,"Advanced Cardiac Ultrasound","Ch.5_Advanced_Cardiac_Ultrasound.pdf",sources/gottlieb-pocus-by-chapter/ch.5_advanced_cardiac_ultrasound.pdf,25,30
+gp-06,6,"Transesophageal Echocardiography","Ch.6_Transesophageal_Echocardiography.pdf",sources/gottlieb-pocus-by-chapter/ch.6_transesophageal_echocardiography.pdf,25,30
+gp-07,7,"Thoracic and Lung Ultrasound","Ch.7_Thoracic_and_Lung_Ultrasound.pdf",sources/gottlieb-pocus-by-chapter/ch.7_thoracic_and_lung_ultrasound.pdf,25,30
+gp-08,8,"Ultrasound of the Aorta","Ch.8_Ultrasound_of_the_Aorta.pdf",sources/gottlieb-pocus-by-chapter/ch.8_ultrasound_of_the_aorta.pdf,25,30
+gp-09,9,"Renal Urinary Bladder Ultrasound","Ch.9_Renal_Urinary_Bladder Ultrasound.pdf",sources/gottlieb-pocus-by-chapter/ch.9_renal_urinary_bladder-ultrasound.pdf,25,30
+gp-10,10,"Hepatobiliary Pancreas and Spleen Ultrsound","Ch.10_Hepatobiliary_Pancreas_and_Spleen_Ultrsound.pdf",sources/gottlieb-pocus-by-chapter/ch.10_hepatobiliary_pancreas_and_spleen_ultrsound.pdf,25,30
+gp-11,11,"Gastrointestinal Ultrasound","Ch.11_Gastrointestinal_Ultrasound.pdf",sources/gottlieb-pocus-by-chapter/ch.11_gastrointestinal_ultrasound.pdf,25,30
+gp-12,12,"Obstetric Ultrasound","Ch.12_Obstetric_Ultrasound.pdf",sources/gottlieb-pocus-by-chapter/ch.12_obstetric_ultrasound.pdf,25,30
+gp-13,13,"Gynecological Ultrasound","Ch.13_Gynecological_Ultrasound.pdf",sources/gottlieb-pocus-by-chapter/ch.13_gynecological_ultrasound.pdf,25,30
+gp-14,14,"Male Genitourinary Ultrasound","Ch.14_Male_Genitourinary_Ultrasound.pdf",sources/gottlieb-pocus-by-chapter/ch.14_male_genitourinary_ultrasound.pdf,25,30
+gp-15,15,"Ocular Ultrasoundpdf","Ch.15_Ocular_Ultrasoundpdf.pdf",sources/gottlieb-pocus-by-chapter/ch.15_ocular_ultrasoundpdf.pdf,25,30
+gp-16,16,"Central Nervous System Ultrasound","Ch.16_Central_Nervous_System_Ultrasound.pdf",sources/gottlieb-pocus-by-chapter/ch.16_central_nervous_system_ultrasound.pdf,25,30
+gp-17,17,"Head and Neck Ultrasound","Ch.17_Head_and_Neck_Ultrasound.pdf",sources/gottlieb-pocus-by-chapter/ch.17_head_and_neck_ultrasound.pdf,25,30
+gp-18,18,"Skin and Soft Tissue","Ch.18_Skin_and_Soft Tissue.pdf",sources/gottlieb-pocus-by-chapter/ch.18_skin_and_soft-tissue.pdf,25,30
+gp-19,19,"Musculoskeletal Ultrasound","Ch.19_Musculoskeletal_Ultrasound.pdf",sources/gottlieb-pocus-by-chapter/ch.19_musculoskeletal_ultrasound.pdf,25,30
+gp-20,20,"Vascular Ultrasound","Ch.20_Vascular_Ultrasound.pdf",sources/gottlieb-pocus-by-chapter/ch.20_vascular_ultrasound.pdf,25,30
+gp-21,21,"Ultrasound Guided Procedures","Ch.21_Ultrasound_Guided_Procedures.pdf",sources/gottlieb-pocus-by-chapter/ch.21_ultrasound_guided_procedures.pdf,25,30
+gp-22,22,"Nerve Blocks","Ch.22_Nerve_Blocks.pdf",sources/gottlieb-pocus-by-chapter/ch.22_nerve_blocks.pdf,25,30
+gp-23,23,"Resuscitative Ultrasound","Ch.23_Resuscitative_Ultrasound.pdf",sources/gottlieb-pocus-by-chapter/ch.23_resuscitative_ultrasound.pdf,25,30
+gp-24,24,"Ultrasound Education","Ch.24_Ultrasound_Education.pdf",sources/gottlieb-pocus-by-chapter/ch.24_ultrasound_education.pdf,25,30
+gp-25,25,"Ultrasound Research","Ch.25_Ultrasound_Research.pdf",sources/gottlieb-pocus-by-chapter/ch.25_ultrasound_research.pdf,25,30
+gp-26,26,"Diversity Ultrasound","Ch.26_Diversity_Ultrasound.pdf",sources/gottlieb-pocus-by-chapter/ch.26_diversity_ultrasound.pdf,25,30
+gp-27,27,"Administration Ultrasound Programs","Ch.27_Administration_Ultrasound Programs.pdf",sources/gottlieb-pocus-by-chapter/ch.27_administration_ultrasound-programs.pdf,25,30
+gp-28,28,"System Management Informatio Technology","Ch.28_System_Management_Informatio_Technology.pdf",sources/gottlieb-pocus-by-chapter/ch.28_system_management_informatio_technology.pdf,25,30
+gp-29,29,"Emerging Applications","Ch.29_Emerging_Applications.pdf",sources/gottlieb-pocus-by-chapter/ch.29_emerging_applications.pdf,25,30
+gp-30,30,"Global Health","Ch.30_Global_Health.pdf",sources/gottlieb-pocus-by-chapter/ch.30_global_health.pdf,25,30

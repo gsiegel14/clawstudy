@@ -149,11 +149,9 @@ Deliverable:
 
 ## WS-D: Messaging channel orchestration (February 28, 2026 to March 1, 2026)
 
-1. Map SMS/Telegram start intents to `session/start`.
-2. Map natural-language variants:
-- `lets start fast`
-- `question 1`/`q1`
-3. Map answer text `A/B/C/D` to `session/answer`.
+1. Map A/B/C/D answer text to `session/answer` (deterministic fast-path, no LLM).
+2. Route all other text through LLM planner (`planTelegramAgentRoute`) — handles natural-language variants for start, resume, question, folders, pdf, misses, etc.
+3. Handle PDF document uploads from Telegram (download → R2 → ingest queue).
 4. Implement SMS webhook + status callback with signature validation.
 5. Implement Telegram image send path (`sendPhoto`) from `image_ref` media.
 6. Return:

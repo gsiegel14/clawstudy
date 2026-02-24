@@ -20,12 +20,38 @@
       "bucket_name": "clawstudydata"
     }
   ],
+  "ai": {
+    "binding": "AI"
+  },
+  "queues": {
+    "producers": [
+      {
+        "queue": "study-ingest",
+        "binding": "INGEST_QUEUE"
+      }
+    ],
+    "consumers": [
+      {
+        "queue": "study-ingest",
+        "max_batch_size": 1,
+        "max_retries": 5
+      }
+    ]
+  },
   "vars": {
-    "SCHEMA_VERSION": "1.0.0"
+    "SCHEMA_VERSION": "1.0.0",
+    "INGEST_TEXT_MODEL": "@cf/meta/llama-3.2-3b-instruct",
+    "INGEST_GENERATED_QUESTION_COUNT": "20",
+    "CF_AI_GATEWAY_MODEL": "anthropic/claude-haiku-4-5-20251001"
   }
   // Secrets to set with `wrangler secret put`:
   // - STUDY_SERVICE_TOKEN (required for /v1/* except Telegram webhook)
   // - TELEGRAM_BOT_TOKEN (required for Telegram webhook sendMessage/sendPhoto)
   // - TELEGRAM_WEBHOOK_SECRET (optional webhook signature validation)
   // - TWILIO_AUTH_TOKEN (optional, validates Twilio webhook signatures for SMS routes)
+  // - STUDY_AGENT_ENABLED (optional, enables LLM planner for non-answer Telegram input)
+  // - CLOUDFLARE_AI_GATEWAY_API_KEY (required when STUDY_AGENT_ENABLED=true)
+  // - CF_AI_GATEWAY_ACCOUNT_ID (required when STUDY_AGENT_ENABLED=true unless STUDY_AGENT_BASE_URL is set)
+  // - CF_AI_GATEWAY_GATEWAY_ID (required when STUDY_AGENT_ENABLED=true unless STUDY_AGENT_BASE_URL is set)
+  // - STUDY_AGENT_BASE_URL (optional explicit compat base URL override)
 }

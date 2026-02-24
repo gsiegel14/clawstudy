@@ -55,9 +55,10 @@ Out of scope:
 - support hierarchical keys (`book_id`, `chapter_id`, `source_version`)
 - maintain chapter readiness independent per source version
 5. Channel intent support:
-- `start fast` variants
-- explicit first question requests (`question 1`, `q1`)
-- answer intents (`A/B/C/D`, `1/2/3/4`)
+- Agent-first routing: LLM planner handles all non-answer, non-PDF text input.
+- A/B/C/D answer detection is the only deterministic fast-path (no LLM call).
+- PDF document upload via Telegram triggers R2 storage and ingest queue.
+- Natural-language variants (`start fast`, `lets start fast`, `question 1`, `q1`, `resume`, etc.) are handled by the LLM planner without a keyword parser.
 6. SMS transport support:
 - Twilio webhook ingestion (`/v1/channel/sms/webhook`)
 - Twilio delivery status callback (`/v1/channel/sms/status`)

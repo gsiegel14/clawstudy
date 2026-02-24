@@ -3,6 +3,9 @@ import { createApp } from '../src/app';
 import { InMemoryStudyStore } from '../src/store';
 import { InMemoryIdempotencyStore } from '../src/idempotency';
 import type { QuizQuestion } from '../src/types';
+import type { AgentPlanner } from '../src/study-agent';
+
+const mockStartPlanner: AgentPlanner = async () => ({ route: 'start', chapterId: 'us-01' });
 
 function seedQuestions(): QuizQuestion[] {
   return [
@@ -40,6 +43,7 @@ describe('sms webhook route', () => {
     const app = createApp({
       store: new InMemoryStudyStore(seedQuestions()),
       idempotencyStore: new InMemoryIdempotencyStore(),
+      agentPlanner: mockStartPlanner,
     });
 
     const body = new URLSearchParams({
@@ -72,6 +76,7 @@ describe('sms webhook route', () => {
     const app = createApp({
       store: new InMemoryStudyStore(seedQuestions()),
       idempotencyStore: new InMemoryIdempotencyStore(),
+      agentPlanner: mockStartPlanner,
     });
 
     const startBody = new URLSearchParams({

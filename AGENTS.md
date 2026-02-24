@@ -55,6 +55,16 @@ After any work related to question/chapter tracking:
 - chapter/session entries as applicable
 2. Append one line-item to `/Applications/clawstudy/memory/daily-log.md` with what changed and why.
 
+## Channel routing architecture
+
+Telegram and SMS webhook handlers use **agent-first routing**:
+
+1. **A/B/C/D answer detection** — the only deterministic fast-path. `normalizeChoice(text)` returns the canonical choice letter. If matched, the answer is processed without any LLM call.
+2. **PDF document upload** — detected from `message.document.mime_type === 'application/pdf'` before text processing. File is downloaded from Telegram, stored in R2, and registered for ingest.
+3. **LLM planner** — all other text goes to `planTelegramAgentRoute()` in `src/study-agent.ts`. The planner returns an `AgentRouteDecision` (discriminated union on `route`) that maps to a deterministic action. There is no regex/keyword parser.
+
+If the planner returns null, a fallback help message is sent. There is no `parseTelegramIntent()`.
+
 ## Common commands
 
 ```bash

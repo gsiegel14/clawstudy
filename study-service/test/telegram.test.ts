@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { createApp } from '../src/app';
 import { InMemoryStudyStore } from '../src/store';
-import { buildImageDescription, parseTelegramIntent } from '../src/telegram';
+import { buildImageDescription } from '../src/telegram';
 import type { QuizQuestion } from '../src/types';
+import type { AgentPlanner } from '../src/study-agent';
+
+const mockStartPlanner: AgentPlanner = async () => ({ route: 'start', chapterId: 'us-01' });
 
 function questionSeed(): QuizQuestion[] {
   return [
@@ -35,44 +38,7 @@ function questionSeed(): QuizQuestion[] {
   ];
 }
 
-describe('telegram intent parser', () => {
-  it('parses start and q1 variants', () => {
-    expect(parseTelegramIntent('lets start fast').type).toBe('start');
-    expect(parseTelegramIntent("let's start fast").type).toBe('start');
-    expect(parseTelegramIntent('lets start fast peds').type).toBe('start');
-    expect(parseTelegramIntent('fast peds').type).toBe('start');
-    expect(parseTelegramIntent('lets start with the fast chapter').type).toBe('start');
-    expect(parseTelegramIntent('lets start with the fast chaper').type).toBe('start');
-    expect(parseTelegramIntent('/start fast').type).toBe('start');
-    expect(parseTelegramIntent('question 1').type).toBe('q1');
-    expect(parseTelegramIntent('q1').type).toBe('q1');
-    expect(parseTelegramIntent('question1').type).toBe('q1');
-    expect(parseTelegramIntent('q 1').type).toBe('q1');
-    const chapterTwoStart = parseTelegramIntent('start chapter 2');
-    expect(chapterTwoStart.type).toBe('start');
-    if (chapterTwoStart.type === 'start') {
-      expect(chapterTwoStart.chapterId).toBe('us-02');
-    }
-    const chapterTwoQ1 = parseTelegramIntent('question 1 us-02');
-    expect(chapterTwoQ1.type).toBe('q1');
-    if (chapterTwoQ1.type === 'q1') {
-      expect(chapterTwoQ1.chapterId).toBe('us-02');
-    }
-  });
-
-  it('parses answer choices', () => {
-    const intentA = parseTelegramIntent('A');
-    const intentTwo = parseTelegramIntent('2');
-    expect(intentA.type).toBe('answer');
-    if (intentA.type === 'answer') {
-      expect(intentA.choice).toBe('A');
-    }
-    expect(intentTwo.type).toBe('answer');
-    if (intentTwo.type === 'answer') {
-      expect(intentTwo.choice).toBe('B');
-    }
-  });
-});
+// Intent routing is handled by the LLM agent (study-agent.ts). See test/study-agent.test.ts.
 
 describe('image description builder', () => {
   it('returns null when question has no image reference', () => {
@@ -97,7 +63,7 @@ describe('image description builder', () => {
 describe('telegram webhook route', () => {
   it('handles start and answer flow', async () => {
     const store = new InMemoryStudyStore(questionSeed());
-    const app = createApp({ store });
+    const app = createApp({ store, agentPlanner: mockStartPlanner });
 
     const startResponse = await app.request(
       'http://localhost/v1/telegram/webhook',

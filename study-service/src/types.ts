@@ -1,13 +1,27 @@
 export type Choice = 'A' | 'B' | 'C' | 'D';
 
 export interface Env {
+  // Cloudflare bindings
   DB: D1Database;
   STUDY_ASSETS: R2Bucket;
+  AI?: Ai;
+  INGEST_QUEUE?: Queue;
+  // Vars (wrangler.jsonc vars section)
   SCHEMA_VERSION?: string;
+  INGEST_TEXT_MODEL?: string;
+  INGEST_GENERATED_QUESTION_COUNT?: string;
+  CF_AI_GATEWAY_MODEL?: string;
+  EXAM_DATE?: string;
+  // Secrets
   STUDY_SERVICE_TOKEN?: string;
   TELEGRAM_BOT_TOKEN?: string;
   TELEGRAM_WEBHOOK_SECRET?: string;
   TWILIO_AUTH_TOKEN?: string;
+  STUDY_AGENT_ENABLED?: string;
+  CLOUDFLARE_AI_GATEWAY_API_KEY?: string;
+  CF_AI_GATEWAY_ACCOUNT_ID?: string;
+  CF_AI_GATEWAY_GATEWAY_ID?: string;
+  STUDY_AGENT_BASE_URL?: string;
 }
 
 export interface SourceRecord {

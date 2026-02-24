@@ -4,15 +4,18 @@ import { DEFAULT_SCHEMA_VERSION, jsonError, jsonResponse, schemaVersion } from '
 import { deriveSmsIdempotencyKey } from './sms-idempotency';
 import { D1StudyStore, InMemoryStudyStore } from './store';
 import { deriveTelegramIdempotencyKey } from './telegram-idempotency';
-import { buildAnswerFeedback, buildImageDescription, buildQuestionText, parseTelegramIntent } from './telegram';
+import { buildAnswerFeedback, buildImageDescription, buildQuestionText } from './telegram';
 import { verifyTwilioWebhookSignature } from './twilio-signature';
 import { normalizeChoice, parseAnswerBody, parseCompleteSourceBody, parseStartSessionBody, parseUploadUrlBody } from './validation';
 import type { Env, IdempotencyStore, QuizQuestion, StudyStore } from './types';
+import { planTelegramAgentRoute } from './study-agent';
+import type { AgentPlanner } from './study-agent';
 
 interface AppDependencies {
   store?: StudyStore;
   idempotencyStore?: IdempotencyStore;
   now?: () => Date;
+  agentPlanner?: AgentPlanner;
 }
 
 interface JsonResult {
@@ -57,6 +60,10 @@ function toQuestionPayload(question: QuizQuestion): Record<string, unknown> {
 
 function nowIso(deps: AppDependencies): string {
   return (deps.now ? deps.now() : new Date()).toISOString();
+}
+
+function buildAgentPlanner(deps: AppDependencies): AgentPlanner {
+  return deps.agentPlanner ?? planTelegramAgentRoute;
 }
 
 function resolveR2Key(imageRef: string): string {
@@ -847,30 +854,160 @@ export function createApp(deps: AppDependencies = {}): Hono<{ Bindings: Env }> {
       return smsTwiMlResponse([]);
     }
 
-    const intent = parseTelegramIntent(text);
     const store = buildStore(c, deps);
     const idemStore = buildIdempotencyStore(c, deps);
     const currentNowIso = nowIso(deps);
     const userId = `sms:user:${fromPhone}`;
 
-    if (intent.type === 'unknown') {
-      return smsTwiMlResponse(['Try: "lets start fast", "question 1", or answer with A/B/C/D.']);
+    // A/B/C/D fast-path — no LLM needed
+    const choice = normalizeChoice(text);
+    if (choice) {
+      const activeSession = await store.getActiveSessionByUser(userId);
+      if (!activeSession) {
+        return smsTwiMlResponse(['No active session. Send "start fast" to begin.']);
+      }
+
+      const currentQuestionIndex = activeSession.currentQuestionIndex;
+      const currentQuestion = await store.getQuestionByIndex(activeSession.chapterId, currentQuestionIndex);
+      if (!currentQuestion) {
+        return smsTwiMlResponse(['Question cache is warming up. Send "question 1" in a few seconds.']);
+      }
+
+      const answerDeliveryIdempotencyKey = `sms:${fromPhone}:${messageSid}:answer`;
+      const answerIdempotencyKey = deriveSmsIdempotencyKey({
+        fromPhone,
+        messageSid,
+        intent: 'answer',
+        sessionId: activeSession.sessionId,
+        questionId: currentQuestion.questionId,
+      });
+      const answerRequestHash = await sha256Hex(
+        JSON.stringify({
+          message_sid: messageSid,
+          from_phone: fromPhone,
+          text,
+          intent: 'answer',
+        }),
+      );
+
+      const existingAnswer = await idemStore.get(answerDeliveryIdempotencyKey, '/v1/channel/sms/webhook');
+      if (existingAnswer) {
+        if (existingAnswer.requestHash !== answerRequestHash) {
+          return smsTwiMlResponse([]);
+        }
+        return smsTwiMlResponse([]);
+      }
+
+      const evaluated = await evaluateAnswer({
+        store,
+        sessionId: activeSession.sessionId,
+        questionId: currentQuestion.questionId,
+        selectedChoice: choice,
+        idempotencyKey: answerIdempotencyKey,
+        confidence: null,
+        nowIsoValue: currentNowIso,
+      });
+
+      if (evaluated.status === 404) {
+        return smsTwiMlResponse(['Session state changed. Send "start fast" to continue.']);
+      }
+
+      const messages = [
+        buildAnswerFeedback({
+          isCorrect: evaluated.payload.isCorrect,
+          explanation: truncateText(evaluated.payload.explanation, 1400),
+          progress: evaluated.payload.progress,
+        }),
+      ];
+
+      if (evaluated.payload.nextQuestion) {
+        const nextImageDescription = buildImageDescription({
+          imageRef: evaluated.payload.nextQuestion.imageRef,
+          stem: evaluated.payload.nextQuestion.stem,
+          explanation: evaluated.payload.nextQuestion.explanation,
+        });
+        messages.push(
+          buildQuestionText({
+            questionNumber: currentQuestionIndex + 2,
+            stem: evaluated.payload.nextQuestion.stem,
+            choices: evaluated.payload.nextQuestion.choices,
+          }),
+        );
+        if (nextImageDescription) {
+          messages.push(`Image description: ${nextImageDescription}`);
+        }
+      }
+
+      await idemStore.put({
+        idempotencyKey: answerDeliveryIdempotencyKey,
+        endpoint: '/v1/channel/sms/webhook',
+        requestHash: answerRequestHash,
+        statusCode: 200,
+        responseJson: JSON.stringify({ ok: true, status: 'answer_processed' }),
+        nowIso: currentNowIso,
+        ttlSeconds: IDEMPOTENCY_TTL_SECONDS,
+      });
+
+      return smsTwiMlResponse(messages);
     }
 
-    if (intent.type === 'start' || intent.type === 'q1') {
+    // LLM planner — handles all other text
+    const [activeSessionForPlanner, topicMasteryForSms] = await Promise.all([
+      store.getActiveSessionByUser(userId),
+      store.listTopicMastery(userId),
+    ]);
+    const smsWeakTopics = topicMasteryForSms
+      .filter((t) => t.weaknessRank !== null)
+      .sort((a, b) => (a.weaknessRank ?? 999) - (b.weaknessRank ?? 999))
+      .slice(0, 3)
+      .map((t) => t.topic);
+    const smsReviewDueCount = topicMasteryForSms.filter(
+      (t) => t.nextReviewAt !== null && t.nextReviewAt <= currentNowIso,
+    ).length;
+    const decision = await buildAgentPlanner(deps)({
+      env: c.env,
+      nowIso: currentNowIso,
+      userId,
+      userText: text,
+      selectedFolder: null,
+      activeSession: {
+        chapterId: activeSessionForPlanner?.chapterId ?? null,
+        questionIndex: activeSessionForPlanner?.currentQuestionIndex ?? null,
+      },
+      recentMisses: [],
+      history: [],
+      examDate: c.env.EXAM_DATE ?? null,
+      topicWeaknesses: smsWeakTopics,
+      topicsReviewDueCount: smsReviewDueCount,
+    });
+
+    if (!decision) {
+      return smsTwiMlResponse(['Send "start fast" to begin, or A/B/C/D to answer.']);
+    }
+
+    if (decision.route === 'chat') {
+      return smsTwiMlResponse([decision.message ?? 'Send "start fast" to begin.']);
+    }
+
+    if (decision.route === 'start' || decision.route === 'resume' || decision.route === 'q1') {
+      const chapterId =
+        decision.route === 'resume'
+          ? (activeSessionForPlanner?.chapterId ?? 'us-01')
+          : (decision.chapterId ?? 'us-01');
+      const intentLabel: 'start' | 'q1' = decision.route === 'q1' ? 'q1' : 'start';
       const idempotencyKey = deriveSmsIdempotencyKey({
         fromPhone,
         messageSid,
-        intent: intent.type,
-        chapterId: intent.chapterId,
+        intent: intentLabel,
+        chapterId,
       });
       const requestHash = await sha256Hex(
         JSON.stringify({
           message_sid: messageSid,
           from_phone: fromPhone,
           text,
-          intent: intent.type,
-          chapter_id: intent.chapterId,
+          intent: intentLabel,
+          chapter_id: chapterId,
         }),
       );
 
@@ -883,15 +1020,15 @@ export function createApp(deps: AppDependencies = {}): Hono<{ Bindings: Env }> {
       }
 
       const session = await store.getOrCreateSession({
-        chapterId: intent.chapterId,
+        chapterId,
         userId,
         telegramUserId: null,
         telegramChatId: null,
         nowIso: currentNowIso,
       });
 
-      const questionIndex = intent.type === 'q1' ? 0 : session.currentQuestionIndex;
-      const question = await store.getQuestionByIndex(intent.chapterId, questionIndex);
+      const questionIndex = decision.route === 'q1' ? 0 : session.currentQuestionIndex;
+      const question = await store.getQuestionByIndex(chapterId, questionIndex);
       if (!question) {
         await idemStore.put({
           idempotencyKey,
@@ -902,7 +1039,7 @@ export function createApp(deps: AppDependencies = {}): Hono<{ Bindings: Env }> {
           nowIso: currentNowIso,
           ttlSeconds: IDEMPOTENCY_TTL_SECONDS,
         });
-        return smsTwiMlResponse(['Warming up question cache for FAST. Retry in a few seconds.']);
+        return smsTwiMlResponse(['Warming up question cache. Retry in a few seconds.']);
       }
 
       await store.updateSessionPointer({
@@ -941,93 +1078,7 @@ export function createApp(deps: AppDependencies = {}): Hono<{ Bindings: Env }> {
       return smsTwiMlResponse(messages);
     }
 
-    const activeSession = await store.getActiveSessionByUser(userId);
-    if (!activeSession) {
-      return smsTwiMlResponse(['No active session. Send "lets start fast" first.']);
-    }
-
-    const currentQuestionIndex = activeSession.currentQuestionIndex;
-    const currentQuestion = await store.getQuestionByIndex(activeSession.chapterId, currentQuestionIndex);
-    if (!currentQuestion) {
-      return smsTwiMlResponse(['Question cache is warming up. Send "question 1" in a few seconds.']);
-    }
-
-    const answerDeliveryIdempotencyKey = `sms:${fromPhone}:${messageSid}:answer`;
-    const answerIdempotencyKey = deriveSmsIdempotencyKey({
-      fromPhone,
-      messageSid,
-      intent: 'answer',
-      sessionId: activeSession.sessionId,
-      questionId: currentQuestion.questionId,
-    });
-    const answerRequestHash = await sha256Hex(
-      JSON.stringify({
-        message_sid: messageSid,
-        from_phone: fromPhone,
-        text,
-        intent: 'answer',
-      }),
-    );
-
-    const existingAnswer = await idemStore.get(answerDeliveryIdempotencyKey, '/v1/channel/sms/webhook');
-    if (existingAnswer) {
-      if (existingAnswer.requestHash !== answerRequestHash) {
-        return smsTwiMlResponse([]);
-      }
-      return smsTwiMlResponse([]);
-    }
-
-    const evaluated = await evaluateAnswer({
-      store,
-      sessionId: activeSession.sessionId,
-      questionId: currentQuestion.questionId,
-      selectedChoice: intent.choice,
-      idempotencyKey: answerIdempotencyKey,
-      confidence: null,
-      nowIsoValue: currentNowIso,
-    });
-
-    if (evaluated.status === 404) {
-      return smsTwiMlResponse(['Session state changed. Send "lets start fast" to continue.']);
-    }
-
-    const messages = [
-      buildAnswerFeedback({
-        isCorrect: evaluated.payload.isCorrect,
-        explanation: truncateText(evaluated.payload.explanation, 1400),
-        progress: evaluated.payload.progress,
-      }),
-    ];
-
-    if (evaluated.payload.nextQuestion) {
-      const nextImageDescription = buildImageDescription({
-        imageRef: evaluated.payload.nextQuestion.imageRef,
-        stem: evaluated.payload.nextQuestion.stem,
-        explanation: evaluated.payload.nextQuestion.explanation,
-      });
-      messages.push(
-        buildQuestionText({
-          questionNumber: currentQuestionIndex + 2,
-          stem: evaluated.payload.nextQuestion.stem,
-          choices: evaluated.payload.nextQuestion.choices,
-        }),
-      );
-      if (nextImageDescription) {
-        messages.push(`Image description: ${nextImageDescription}`);
-      }
-    }
-
-    await idemStore.put({
-      idempotencyKey: answerDeliveryIdempotencyKey,
-      endpoint: '/v1/channel/sms/webhook',
-      requestHash: answerRequestHash,
-      statusCode: 200,
-      responseJson: JSON.stringify({ ok: true, status: 'answer_processed' }),
-      nowIso: currentNowIso,
-      ttlSeconds: IDEMPOTENCY_TTL_SECONDS,
-    });
-
-    return smsTwiMlResponse(messages);
+    return smsTwiMlResponse(['Send "start fast" to begin, or A/B/C/D to answer.']);
   });
 
   app.post('/v1/channel/sms/status', async (c) => {
@@ -1098,33 +1149,212 @@ export function createApp(deps: AppDependencies = {}): Hono<{ Bindings: Env }> {
       return c.json({ ok: true, ignored: 'missing_message_identifiers' });
     }
 
-    const intent = parseTelegramIntent(text);
+    const userId = `tg:user:${fromId}`;
     const store = buildStore(c, deps);
     const idemStore = buildIdempotencyStore(c, deps);
     const currentNowIso = nowIso(deps);
 
-    if (intent.type === 'unknown') {
+    // 1. PDF document upload handler
+    const document = message.document as Record<string, unknown> | undefined;
+    if (document && document.mime_type === 'application/pdf') {
+      const fileId = String(document.file_id ?? '');
+      const fileName = String(document.file_name ?? 'upload.pdf');
+
+      const fileInfo = (await fetch(
+        `https://api.telegram.org/bot${c.env.TELEGRAM_BOT_TOKEN}/getFile?file_id=${fileId}`,
+      ).then((r) => r.json())) as { ok: boolean; result?: { file_path: string } };
+
+      if (!fileInfo.ok || !fileInfo.result?.file_path) {
+        await sendTelegramMessage(c.env, chatId, 'Could not retrieve your PDF. Try again.');
+        return c.json({ ok: true, status: 'pdf_get_file_failed' });
+      }
+
+      const fileBytes = await fetch(
+        `https://api.telegram.org/file/bot${c.env.TELEGRAM_BOT_TOKEN}/${fileInfo.result.file_path}`,
+      ).then((r) => r.arrayBuffer());
+
+      const source = await store.createSource({
+        filename: fileName,
+        contentType: 'application/pdf',
+        sourceLabel: fileName.replace(/\.pdf$/i, ''),
+      });
+
+      await c.env.STUDY_ASSETS.put(source.objectKey, fileBytes, {
+        httpMetadata: { contentType: 'application/pdf' },
+      });
+
+      await store.completeSource(source.sourceId);
       await sendTelegramMessage(
         c.env,
         chatId,
-        'Try: \"lets start fast\", \"question 1\", or answer with A/B/C/D.',
+        `Got ${fileName}. Ingesting now — reply "ingest status" to check progress.`,
       );
-      return c.json({ ok: true, status: 'help_sent' });
+      return c.json({ ok: true, status: 'pdf_upload_queued', sourceId: source.sourceId });
     }
 
-    if (intent.type === 'start' || intent.type === 'q1') {
+    // 2. A/B/C/D fast-path — no LLM needed
+    const choice = normalizeChoice(text);
+    if (choice) {
+      if (chatType !== 'private') {
+        await sendTelegramMessage(
+          c.env,
+          chatId,
+          'Only direct-message Telegram chats are supported for study sessions.',
+        );
+        return c.json({ ok: true, status: 'unsupported_chat_type' });
+      }
+
+      const activeSession = await store.getActiveSessionByUser(userId);
+      if (!activeSession) {
+        await sendTelegramMessage(c.env, chatId, 'No active session. Send "start fast" to begin.');
+        return c.json({ ok: true, status: 'no_active_session' });
+      }
+
+      const currentQuestionIndex = activeSession.currentQuestionIndex;
+      const currentQuestion = await store.getQuestionByIndex(activeSession.chapterId, currentQuestionIndex);
+      if (!currentQuestion) {
+        await sendTelegramMessage(c.env, chatId, 'Question cache is warming up. Send "question 1" in a few seconds.');
+        return c.json({ ok: true, status: 'warming' });
+      }
+
+      const answerDeliveryIdempotencyKey = `tg:${chatId}:${messageId}:answer`;
+      const answerIdempotencyKey = deriveTelegramIdempotencyKey({
+        chatId,
+        messageId,
+        intent: 'answer',
+        sessionId: activeSession.sessionId,
+        questionId: currentQuestion.questionId,
+      });
+      const answerRequestHash = await sha256Hex(
+        JSON.stringify({
+          update_id: update.update_id ?? null,
+          from_id: fromId,
+          chat_id: chatId,
+          text,
+          intent: 'answer',
+        }),
+      );
+
+      const existingAnswer = await idemStore.get(answerDeliveryIdempotencyKey, '/v1/telegram/webhook');
+      if (existingAnswer) {
+        if (existingAnswer.requestHash !== answerRequestHash) {
+          return c.json({ ok: true, status: 'idempotency_conflict_ignored' });
+        }
+        return c.json({ ok: true, deduped: true, status: 'answer_processed' });
+      }
+
+      const evaluated = await evaluateAnswer({
+        store,
+        sessionId: activeSession.sessionId,
+        questionId: currentQuestion.questionId,
+        selectedChoice: choice,
+        idempotencyKey: answerIdempotencyKey,
+        confidence: null,
+        nowIsoValue: currentNowIso,
+      });
+
+      if (evaluated.status === 404) {
+        await sendTelegramMessage(c.env, chatId, 'Session state changed. Send "start fast" to continue.');
+        return c.json({ ok: true, status: 'session_state_changed' });
+      }
+
+      const feedback = buildAnswerFeedback({
+        isCorrect: evaluated.payload.isCorrect,
+        explanation: truncateText(evaluated.payload.explanation, 1400),
+        progress: evaluated.payload.progress,
+      });
+      await sendTelegramMessage(c.env, chatId, feedback);
+
+      if (evaluated.payload.nextQuestion) {
+        const nextQuestionText = buildQuestionText({
+          questionNumber: currentQuestionIndex + 2,
+          stem: evaluated.payload.nextQuestion.stem,
+          choices: evaluated.payload.nextQuestion.choices,
+        });
+        const nextImageDescription = buildImageDescription({
+          imageRef: evaluated.payload.nextQuestion.imageRef,
+          stem: evaluated.payload.nextQuestion.stem,
+          explanation: evaluated.payload.nextQuestion.explanation,
+        });
+        await sendTelegramQuestion(c.env, {
+          chatId,
+          questionText: nextQuestionText,
+          imageRef: evaluated.payload.nextQuestion.imageRef,
+          imageDescription: nextImageDescription,
+        });
+      }
+
+      await idemStore.put({
+        idempotencyKey: answerDeliveryIdempotencyKey,
+        endpoint: '/v1/telegram/webhook',
+        requestHash: answerRequestHash,
+        statusCode: 200,
+        responseJson: JSON.stringify({ ok: true, status: 'answer_processed' }),
+        nowIso: currentNowIso,
+        ttlSeconds: IDEMPOTENCY_TTL_SECONDS,
+      });
+
+      return c.json({ ok: true, status: 'answer_processed' });
+    }
+
+    // 3. LLM planner — handles all other text
+    const [activeSessionForPlanner, topicMasteryForTg] = await Promise.all([
+      store.getActiveSessionByUser(userId),
+      store.listTopicMastery(userId),
+    ]);
+    const tgWeakTopics = topicMasteryForTg
+      .filter((t) => t.weaknessRank !== null)
+      .sort((a, b) => (a.weaknessRank ?? 999) - (b.weaknessRank ?? 999))
+      .slice(0, 3)
+      .map((t) => t.topic);
+    const tgReviewDueCount = topicMasteryForTg.filter(
+      (t) => t.nextReviewAt !== null && t.nextReviewAt <= currentNowIso,
+    ).length;
+    const decision = await buildAgentPlanner(deps)({
+      env: c.env,
+      nowIso: currentNowIso,
+      userId,
+      userText: text,
+      selectedFolder: null,
+      activeSession: {
+        chapterId: activeSessionForPlanner?.chapterId ?? null,
+        questionIndex: activeSessionForPlanner?.currentQuestionIndex ?? null,
+      },
+      recentMisses: [],
+      history: [],
+      examDate: c.env.EXAM_DATE ?? null,
+      topicWeaknesses: tgWeakTopics,
+      topicsReviewDueCount: tgReviewDueCount,
+    });
+
+    if (!decision) {
+      await sendTelegramMessage(c.env, chatId, 'Send "start fast" to begin, or A/B/C/D to answer.');
+      return c.json({ ok: true, status: 'fallback' });
+    }
+
+    if (decision.route === 'chat') {
+      await sendTelegramMessage(c.env, chatId, decision.message ?? 'Send "start fast" to begin.');
+      return c.json({ ok: true, status: 'chat' });
+    }
+
+    if (decision.route === 'start' || decision.route === 'resume' || decision.route === 'q1') {
+      const chapterId =
+        decision.route === 'resume'
+          ? (activeSessionForPlanner?.chapterId ?? 'us-01')
+          : (decision.chapterId ?? 'us-01');
+      const intentLabel: 'start' | 'q1' = decision.route === 'q1' ? 'q1' : 'start';
       const idempotencyKey = deriveTelegramIdempotencyKey({
         chatId,
         messageId,
-        intent: intent.type,
-        chapterId: intent.chapterId,
+        intent: intentLabel,
+        chapterId,
       });
       const requestHash = await sha256Hex(
         JSON.stringify({
           update_id: update.update_id ?? null,
           text,
-          intent: intent.type,
-          chapter_id: intent.chapterId,
+          intent: intentLabel,
+          chapter_id: chapterId,
         }),
       );
 
@@ -1154,23 +1384,18 @@ export function createApp(deps: AppDependencies = {}): Hono<{ Bindings: Env }> {
         return c.json({ ok: true, status: 'unsupported_chat_type' });
       }
 
-      const userId = `tg:user:${fromId}`;
       const session = await store.getOrCreateSession({
-        chapterId: intent.chapterId,
+        chapterId,
         userId,
         telegramUserId: fromId,
         telegramChatId: chatId,
         nowIso: currentNowIso,
       });
 
-      const questionIndex = intent.type === 'q1' ? 0 : session.currentQuestionIndex;
-      const question = await store.getQuestionByIndex(intent.chapterId, questionIndex);
+      const questionIndex = decision.route === 'q1' ? 0 : session.currentQuestionIndex;
+      const question = await store.getQuestionByIndex(chapterId, questionIndex);
       if (!question) {
-        await sendTelegramMessage(
-          c.env,
-          chatId,
-          'Warming up question cache for FAST. Retry in a few seconds.',
-        );
+        await sendTelegramMessage(c.env, chatId, 'Warming up question cache. Retry in a few seconds.');
         await idemStore.put({
           idempotencyKey,
           endpoint: '/v1/telegram/webhook',
@@ -1222,107 +1447,9 @@ export function createApp(deps: AppDependencies = {}): Hono<{ Bindings: Env }> {
       return c.json({ ok: true, status: 'sent_question' });
     }
 
-    const userId = `tg:user:${fromId}`;
-    if (chatType !== 'private') {
-      await sendTelegramMessage(
-        c.env,
-        chatId,
-        'Only direct-message Telegram chats are supported for study sessions.',
-      );
-      return c.json({ ok: true, status: 'unsupported_chat_type' });
-    }
-
-    const activeSession = await store.getActiveSessionByUser(userId);
-    if (!activeSession) {
-      await sendTelegramMessage(c.env, chatId, 'No active session. Send \"lets start fast\" first.');
-      return c.json({ ok: true, status: 'no_active_session' });
-    }
-
-    const currentQuestionIndex = activeSession.currentQuestionIndex;
-    const currentQuestion = await store.getQuestionByIndex(activeSession.chapterId, currentQuestionIndex);
-    if (!currentQuestion) {
-      await sendTelegramMessage(c.env, chatId, 'Question cache is warming up. Send \"question 1\" in a few seconds.');
-      return c.json({ ok: true, status: 'warming' });
-    }
-
-    const answerDeliveryIdempotencyKey = `tg:${chatId}:${messageId}:answer`;
-    const answerIdempotencyKey = deriveTelegramIdempotencyKey({
-      chatId,
-      messageId,
-      intent: 'answer',
-      sessionId: activeSession.sessionId,
-      questionId: currentQuestion.questionId,
-    });
-    const answerRequestHash = await sha256Hex(
-      JSON.stringify({
-        update_id: update.update_id ?? null,
-        from_id: fromId,
-        chat_id: chatId,
-        text,
-        intent: 'answer',
-      }),
-    );
-
-    const existingAnswer = await idemStore.get(answerDeliveryIdempotencyKey, '/v1/telegram/webhook');
-    if (existingAnswer) {
-      if (existingAnswer.requestHash !== answerRequestHash) {
-        return c.json({ ok: true, status: 'idempotency_conflict_ignored' });
-      }
-      return c.json({ ok: true, deduped: true, status: 'answer_processed' });
-    }
-
-    const evaluated = await evaluateAnswer({
-      store,
-      sessionId: activeSession.sessionId,
-      questionId: currentQuestion.questionId,
-      selectedChoice: intent.choice,
-      idempotencyKey: answerIdempotencyKey,
-      confidence: null,
-      nowIsoValue: currentNowIso,
-    });
-
-    if (evaluated.status === 404) {
-      await sendTelegramMessage(c.env, chatId, 'Session state changed. Send \"lets start fast\" to continue.');
-      return c.json({ ok: true, status: 'session_state_changed' });
-    }
-
-    const feedback = buildAnswerFeedback({
-      isCorrect: evaluated.payload.isCorrect,
-      explanation: truncateText(evaluated.payload.explanation, 1400),
-      progress: evaluated.payload.progress,
-    });
-    await sendTelegramMessage(c.env, chatId, feedback);
-
-    if (evaluated.payload.nextQuestion) {
-      const nextQuestionText = buildQuestionText({
-        questionNumber: currentQuestionIndex + 2,
-        stem: evaluated.payload.nextQuestion.stem,
-        choices: evaluated.payload.nextQuestion.choices,
-      });
-      const nextImageDescription = buildImageDescription({
-        imageRef: evaluated.payload.nextQuestion.imageRef,
-        stem: evaluated.payload.nextQuestion.stem,
-        explanation: evaluated.payload.nextQuestion.explanation,
-      });
-      await sendTelegramQuestion(c.env, {
-        chatId,
-        questionText: nextQuestionText,
-        imageRef: evaluated.payload.nextQuestion.imageRef,
-        imageDescription: nextImageDescription,
-      });
-    }
-
-    await idemStore.put({
-      idempotencyKey: answerDeliveryIdempotencyKey,
-      endpoint: '/v1/telegram/webhook',
-      requestHash: answerRequestHash,
-      statusCode: 200,
-      responseJson: JSON.stringify({ ok: true, status: 'answer_processed' }),
-      nowIso: currentNowIso,
-      ttlSeconds: IDEMPOTENCY_TTL_SECONDS,
-    });
-
-    return c.json({ ok: true, status: 'answer_processed' });
+    // Fallback for unrecognized agent routes
+    await sendTelegramMessage(c.env, chatId, 'Send "start fast" to begin, or A/B/C/D to answer.');
+    return c.json({ ok: true, status: 'fallback' });
   });
 
   app.get('/v1/progress/:userId', async (c) => {

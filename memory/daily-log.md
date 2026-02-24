@@ -34,3 +34,7 @@ Last updated: February 23, 2026
 28. Added ACEP section execution pathway in `docs/implementation/acep-course-question-pathway.md`, including attending-level EM FPD US blueprint and per-pair minimum `25` question requirement (`575` minimum section total).
 29. Added pair-level ACEP question memory tracker `memory/acep-course-question-progress-2026-02-23.csv` and section summary memory `memory/acep-course-section-memory-2026-02-23.json` for draft/review/approval/publish tracking.
 30. Extended `memory/progress.json` with `additional_source_batches` + ACEP next actions and updated memory documentation to make multi-section tracking explicit.
+
+## 2026-02-24
+
+1. Removed `parseTelegramIntent` parser entirely and switched to **agent-first routing** in `study-service`: LLM planner (`planTelegramAgentRoute`) is now the sole intent router for all non-answer, non-PDF text; A/B/C/D detection via `normalizeChoice` is the only deterministic fast-path; added Telegram PDF document upload handler (download → R2 → ingest queue); upgraded default planner model to `llama-3.3-70b-instruct-fp8-fast`; enhanced system prompt with full conversational study assistant context; updated tests and docs; all `33` tests passing.
